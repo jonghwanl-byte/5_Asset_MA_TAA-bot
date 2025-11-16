@@ -1,4 +1,8 @@
+## 📄 2. `requirements.txt` (필요 라이브러리)
+
+```text
 yfinance
 numpy
 pandas
 requests
+pytz
