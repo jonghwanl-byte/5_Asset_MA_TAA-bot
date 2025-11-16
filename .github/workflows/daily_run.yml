@@ -34,7 +34,8 @@ jobs:
 
     - name: 🚀 MA 전략 실행 및 텔레그램 발송 (TEST MODE: ${{ github.event.inputs.test_mode }})
       env:
-        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }} # L35 오류 해결 목표
+        # 이 블록이 Line 35를 포함하며, 모든 공백이 정확히 10칸입니다.
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }} 
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         TEST_MODE: ${{ github.event.inputs.test_mode }}
       run: python daily_signal_generator.py
