@@ -5,7 +5,7 @@ on:
     # 매일 23:00 UTC에 실행 (한국 시간 KST = UTC + 9, 즉 오전 8시)
     - cron: '0 23 * * *'
     
-  workflow_dispatch: # Actions 탭에 수동 실행 버튼을 표시하는 트리거
+  workflow_dispatch:
     inputs:
       test_mode:
         description: 'Enable Test Mode (Bypasses weekend check, runs on latest data).'
@@ -31,22 +31,23 @@ jobs:
 
     - name: ⚙️ 종속성 설치 (requirements.txt)
       run: pip install -r requirements.txt
-    
-    # --- 1. MA 전략 실행 및 결과 캡처 (오류 리다이렉션 포함) ---
+
+    # --- 1. MA 전략 실행 및 결과 캡처 (가장 안정적인 방식) ---
     - name: 🚀 MA 전략 실행 및 결과 캡처
       id: strategy_output
       env:
-        # Python 스크립트 실행에 필요한 환경 변수
         TEST_MODE: ${{ github.event.inputs.test_mode }}
+        # Note: TELEGRAM_TO 및 TOKEN은 이 단계에서 필요 없으며, 다음 단계에서 Secrets가 직접 사용됨.
       run: |
-        # Python 스크립트 실행 환경 변수를 여기서 직접 설정
-        export TEST_MODE=${{ github.event.inputs.test_mode }}
+        # Python 스크립트 실행 (STDERR를 STDOUT으로 리다이렉션)
+        REPORT_CONTENT=$(python daily_signal_generator.py 2>&1)
         
+        # Bash 변수 내용을 GITHUB_OUTPUT에 할당
+        # (EOF 오류를 피하기 위해 파일 명령어를 Bash 변수 할당으로 대체)
         echo "report<<EOF" >> $GITHUB_OUTPUT
-        # 🚨 핵심 수정: 2>&1 를 추가하여 STDERR(오류)를 STDOUT으로 통합 캡처
-        python daily_signal_generator.py 2>&1 >> $GITHUB_OUTPUT 
+        echo "$REPORT_CONTENT" >> $GITHUB_OUTPUT
         echo "EOF" >> $GITHUB_OUTPUT
-
+        
     # --- 2. 텔레그램 메시지 전송 ---
     - name: 📩 텔레그램 메시지 전송
       uses: appleboy/telegram-action@master
@@ -55,4 +56,4 @@ jobs:
         token: ${{ secrets.TELEGRAM_TOKEN }}
         message: ${{ steps.strategy_output.outputs.report }}
         format: markdown 
-      if: always() # 스크립트가 오류를 내도 오류 메시지를 보내도록 설정
+      if: always()
