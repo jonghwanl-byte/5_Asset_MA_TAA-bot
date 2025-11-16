@@ -30,18 +30,26 @@ jobs:
         python-version: '3.x'
 
     - name: ⚙️ 종속성 설치 (requirements.txt)
-      run: pip install -r requirements.txt
+      # Python 설치 경로 문제를 해결하기 위해 upgrade와 install을 명시적으로 실행
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
 
+    # --- 1. MA 전략 실행 및 결과 캡처 (환경 PATH 설정 포함) ---
     - name: 🚀 MA 전략 실행 및 결과 캡처
       id: strategy_output
       env:
-        # L35 오류 방지: 8칸 공백
+        # Python 스크립트 실행에 필요한 환경 변수
         TEST_MODE: ${{ github.event.inputs.test_mode }}
       run: |
-        # 환경 변수를 Bash로 직접 export
-        export TEST_MODE=${{ github.event.inputs.test_mode }}
+        # 🚨 PYTHONPATH 설정: 설치된 모듈 경로를 Python이 인식하도록 강제 (Exit Code 1 해결 목표)
+        PYTHON_PACKAGES=$(python -c "import site; print(site.getsitepackages()[0] if site.getsitepackages() else '')")
+        export PYTHONPATH=$PYTHON_PACKAGES:$PYTHONPATH
         
-        # 스크립트 실행 (STDERR를 STDOUT으로 리다이렉션)
+        # TEST_MODE 변수 export (스크립트에서 사용)
+        export TEST_MODE=${{ github.event.inputs.test_mode }}
+
+        # 스크립트 실행 (STDERR를 STDOUT으로 리다이렉션하여 오류 캡처)
         REPORT_CONTENT=$(python daily_signal_generator.py 2>&1)
         
         # GITHUB_OUTPUT에 캡처된 내용 할당
@@ -49,11 +57,12 @@ jobs:
         echo "$REPORT_CONTENT" >> $GITHUB_OUTPUT
         echo "EOF" >> $GITHUB_OUTPUT
 
+    # --- 2. 텔레그램 메시지 전송 ---
     - name: 📩 텔레그램 메시지 전송
       uses: appleboy/telegram-action@master
       with:
-        to: ${{ secrets.TELEGRAM_TO }} 
+        to: ${{ secrets.TELEGRAM_CHAT_ID }} 
         token: ${{ secrets.TELEGRAM_TOKEN }}
         message: ${{ steps.strategy_output.outputs.report }}
         format: markdown 
-      if: always()
+      if: always() # 스크립트 성공/실패 여부와 관계없이 메시지를 보내도록 설정
