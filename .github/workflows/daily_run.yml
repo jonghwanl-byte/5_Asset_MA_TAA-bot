@@ -1,66 +1,38 @@
-name: Daily MA Strategy Report
+name: TAA Bot - 5-Asset MA Strategy
 
 on:
   schedule:
-    # 매일 23:00 UTC에 실행 (한국 시간 KST = UTC + 9, 즉 오전 8시)
+    # 매일 23:00 UTC (한국 시간(KST) 아침 8시)에 실행
     - cron: '0 23 * * *'
     
-  workflow_dispatch: # Actions 탭에 수동 실행 버튼을 표시하는 트리거
-    inputs:
-      test_mode:
-        description: 'Enable Test Mode (Bypasses weekend check, runs on latest data).'
-        required: true
-        default: 'FALSE'
-        type: choice
-        options:
-        - 'TRUE'
-        - 'FALSE'
+  # 수동 실행 (Action 탭에서 'Run workflow' 버튼)
+  workflow_dispatch:
 
 jobs:
-  run_daily_strategy:
+  run_strategy:
     runs-on: ubuntu-latest
     
     steps:
-    - name: 📦 코드 체크아웃
-      uses: actions/checkout@v3
+      # 1. GitHub 저장소의 코드를 서버로 가져옵니다
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-    - name: 🐍 Python 환경 설정
-      uses: actions/setup-python@v3
-      with:
-        python-version: '3.x'
+      # 2. Python 3.10 환경을 설정합니다
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
 
-    - name: ⚙️ 종속성 설치 (requirements.txt)
-      run: |
-        python -m pip install --upgrade pip
-        # --user 옵션 없이 설치하여 시스템 경로에 라이브러리를 확실히 넣음
-        pip install -r requirements.txt
+      # 3. 필요한 라이브러리(yfinance, requests 등)를 설치합니다
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-    # --- 1. MA 전략 실행 및 결과 캡처 (최종 환경 경로 설정) ---
-    - name: 🚀 MA 전략 실행 및 결과 캡처
-      id: strategy_output
-      env:
-        TEST_MODE: ${{ github.event.inputs.test_mode }}
-      run: |
-        # 🚨 핵심 수정: 설치된 라이브러리 경로를 PYTHONPATH에 명시적으로 추가
-        # 이는 'No module named yfinance' 오류를 해결하기 위한 마지막 조치입니다.
-        export PYTHONPATH=$(python -c "import site; print(site.getsitepackages()[0] if site.getsitepackages() else '')")
-        
-        export TEST_MODE=${{ github.event.inputs.test_mode }}
-
-        # 스크립트 실행 (STDERR를 STDOUT으로 리다이렉션하여 오류 캡처)
-        REPORT_CONTENT=$(python daily_signal_generator.py 2>&1)
-        
-        # GITHUB_OUTPUT에 캡처된 내용 할당
-        echo "report<<EOF" >> $GITHUB_OUTPUT
-        echo "$REPORT_CONTENT" >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
-
-    # --- 2. 텔레그램 메시지 전송 ---
-    - name: 📩 텔레그램 메시지 전송
-      uses: appleboy/telegram-action@master
-      with:
-        to: ${{ secrets.TELEGRAM_CHAT_ID }} 
-        token: ${{ secrets.TELEGRAM_TOKEN }}
-        message: ${{ steps.strategy_output.outputs.report }}
-        format: markdown 
-      if: always()
+      # 4. 일일 신호 생성 및 텔레그램 전송 스크립트(Python)를 실행합니다
+      - name: Run Strategy Python Script
+        run: python daily_signal_generator.py
+        env:
+          # GitHub Secrets를 Python 스크립트의 '환경 변수'로 주입합니다
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_TO: ${{ secrets.TELEGRAM_TO }}
