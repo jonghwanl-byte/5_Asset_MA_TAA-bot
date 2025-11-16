@@ -61,8 +61,10 @@ def get_daily_signals_and_report():
     # 총 점수 (0~3점)
     total_scores = (sig_20 + sig_120 + sig_200)
     
-    # 시나리오 A 스케일러 적용 (0.0, 0.5, 0.75, 1.0)
-    scalars = total_scores.map(SCALAR_MAP)
+    # [수정된 부분]
+    # .map()은 Series용 함수입니다. DataFrame에는 .applymap()을 사용해야 합니다.
+    # .get()을 사용하여 맵핑되지 않는 값(NaN 등)은 0.0(OFF)으로 처리합니다.
+    scalars = total_scores.applymap(lambda x: SCALAR_MAP.get(x, 0.0))
     
     # '오늘' (어제 마감) / '어제' (그제 마감) 데이터 추출
     today_scalars = scalars.iloc[-1]
@@ -183,7 +185,11 @@ def get_daily_signals_and_report():
             
             t_price = today_prices[ticker]
             ma_val = all_prices_df[ticker].rolling(window=window).mean().iloc[-1]
-            disparity = (t_price / ma_val) - 1.0
+            # MA 계산이 안되는 초기 구간(NaN) 방지
+            if pd.isna(ma_val):
+                disparity = 0.0
+            else:
+                disparity = (t_price / ma_val) - 1.0
             
             report.append(f"* {window}일: {state_emoji} (이격도: {disparity:+.1%}) {state_change}")
     
@@ -192,11 +198,7 @@ def get_daily_signals_and_report():
 # --- [5. 메인 실행] ---
 if __name__ == "__main__":
     
-    # --- [수정] ---
-    # 0. 주말/휴일 확인 로직 '제거'
-    # if check_weekend():
-    #     sys.exit(0) 
-    # -------------
+    # [수정] 주말 확인 로직 제거
         
     try:
         # 1. 리포트 생성
