@@ -35,7 +35,7 @@ jobs:
     - name: 🚀 MA 전략 실행 및 텔레그램 발송 (TEST MODE: ${{ github.event.inputs.test_mode }})
       env:
         # 이 라인이 L35입니다. GitHub 파서가 정확히 인식하도록 8칸 공백을 맞춥니다.
-        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }} 
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         TEST_MODE: ${{ github.event.inputs.test_mode }}
       run: python daily_signal_generator.py
