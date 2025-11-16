@@ -33,8 +33,9 @@ jobs:
       run: pip install -r requirements.txt
 
     - name: 🚀 MA 전략 실행 및 텔레그램 발송 (TEST MODE: ${{ github.event.inputs.test_mode }})
-      env: # L34 (이 줄부터 하위 3줄의 들여쓰기가 매우 중요합니다.)
-        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }} # L35 (이전 오류 발생 위치)
+      # 'name' 블록 내에서 'env'와 'run'은 같은 레벨입니다.
+      env: # <--- Line 34: 여기서 오류가 발생하지 않도록 들여쓰기를 정확히 맞췄습니다.
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         TEST_MODE: ${{ github.event.inputs.test_mode }}
       run: python daily_signal_generator.py
