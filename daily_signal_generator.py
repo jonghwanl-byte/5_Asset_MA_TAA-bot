@@ -77,7 +77,6 @@ def run_ma_strategy_for_date(target_date):
             upper = ma_line * (1.0 + N_BAND)
             
             # Simplified MA Signal: Score increases if the latest price is above the upper band.
-            # This implements the core logic of momentum following.
             if latest_prices[ticker] > upper:
                  score += 1
         
@@ -95,8 +94,6 @@ def run_ma_strategy_for_date(target_date):
     # 5. Calculate Previous Day's Strategy Return (for the report)
     if len(prices_df) >= 2:
         yesterday_asset_returns = prices_df.iloc[-1] / prices_df.iloc[-2] - 1
-        # The calculated weights (invested_weights) are applied to the daily asset returns 
-        # to find the strategy's return for the final day.
         daily_return = (invested_weights * yesterday_asset_returns).sum()
     else:
         daily_return = 0.0
