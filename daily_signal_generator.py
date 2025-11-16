@@ -94,6 +94,8 @@ def run_ma_strategy_for_date(target_date):
     # 5. Calculate Previous Day's Strategy Return (for the report)
     if len(prices_df) >= 2:
         yesterday_asset_returns = prices_df.iloc[-1] / prices_df.iloc[-2] - 1
+        # The calculated weights (invested_weights) are applied to the daily asset returns 
+        # to find the strategy's return for the final day.
         daily_return = (invested_weights * yesterday_asset_returns).sum()
     else:
         daily_return = 0.0
@@ -101,31 +103,7 @@ def run_ma_strategy_for_date(target_date):
     return result_weights, f"Previous Day's Strategy Return: {daily_return:.2%}"
 
 # --- Telegram Transmission and Scheduling Logic ---
-
-def send_telegram_message(message):
-    """Function to send the message via Telegram bot"""
-    TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
-    TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
-    
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("\n==================================================")
-        print("Warning: TELEGRAM_TOKEN or CHAT_ID is NOT configured.")
-        print("==================================================")
-        print(f"\n[Report Content Preview]\n{message}")
-        return
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        'chat_id': TELEGRAM_CHAT_ID,
-        'text': message,
-        'parse_mode': 'Markdown'
-    }
-    try:
-        response = requests.post(url, data=payload, timeout=10)
-        response.raise_for_status()
-        print("Telegram message sent successfully!")
-    except requests.exceptions.RequestException as e:
-        print(f"Telegram message sending failed: {e}")
+# Note: send_telegram_message function is REMOVED as output is captured by GitHub Actions.
 
 def get_target_date():
     """Determines the base date for data analysis."""
@@ -151,7 +129,7 @@ def get_target_date():
         return today - datetime.timedelta(days=1)
 
 def format_report(target_date, weights, daily_return_info):
-    """Formats the report message in Markdown."""
+    """Formats the report message in Markdown (This is the final output to be captured)."""
     
     # MDD, CAGR values are fixed for the report (using backtest results)
     CAGR_VALUE = "16.31%"
@@ -188,17 +166,18 @@ if __name__ == "__main__":
     target_date = get_target_date()
     
     if target_date is None:
-        print("오늘은 주말(토/일)이므로 보고서를 발송하지 않습니다.")
+        # 주말이므로 실행을 건너뜀 (텔레그램 전송도 안함)
         sys.exit(0)
     
     # 1. Execute MA Strategy and calculate final weights
     weights, daily_return_info = run_ma_strategy_for_date(target_date)
     
     if weights is None:
-        report = f"❌ **MA Individual Strategy Report - Failed**\nBase Date: {target_date.strftime('%Y-%m-%d')}\nReason: {daily_return_info}"
+        final_output = f"❌ **MA Individual Strategy Report - Failed**\nBase Date: {target_date.strftime('%Y-%m-%d')}\nReason: {daily_return_info}"
     else:
         # 2. Format the report
-        report = format_report(target_date, weights, daily_return_info)
+        final_output = format_report(target_date, weights, daily_return_info)
     
-    # 3. Send Telegram
-    send_telegram_message(report)
+    # 3. Send final report content to standard output (captured by GitHub Actions)
+    # 이 내용이 GitHub Actions의 $GITHUB_OUTPUT으로 캡처되어 텔레그램으로 전송됩니다.
+    print(final_output)
