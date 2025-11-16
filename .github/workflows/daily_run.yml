@@ -5,7 +5,7 @@ on:
     # 매일 23:00 UTC에 실행 (한국 시간 KST = UTC + 9, 즉 오전 8시)
     - cron: '0 23 * * *'
     
-  workflow_dispatch: # ★★★ Actions 탭에 수동 실행 버튼을 표시하는 핵심 트리거 ★★★
+  workflow_dispatch: # Actions 탭에 수동 실행 버튼을 표시하는 트리거
     inputs:
       test_mode:
         description: 'Enable Test Mode (Bypasses weekend check, runs on latest data).'
@@ -33,8 +33,8 @@ jobs:
       run: pip install -r requirements.txt
 
     - name: 🚀 MA 전략 실행 및 텔레그램 발송 (TEST MODE: ${{ github.event.inputs.test_mode }})
-      env:
-        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      env: # L34 (이 줄부터 하위 3줄의 들여쓰기가 매우 중요합니다.)
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }} # L35 (이전 오류 발생 위치)
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         TEST_MODE: ${{ github.event.inputs.test_mode }}
       run: python daily_signal_generator.py
