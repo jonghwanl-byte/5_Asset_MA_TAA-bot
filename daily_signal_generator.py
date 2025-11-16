@@ -117,7 +117,7 @@ def send_telegram_message(message):
         print(f"\n[Report Content Preview]\n{message}")
         return
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){TELEGRAM_TOKEN}/sendMessage"
     payload = {
         'chat_id': TELEGRAM_CHAT_ID,
         'text': message,
@@ -193,4 +193,3 @@ if __name__ == "__main__":
     
     # 3. Send Telegram
     send_telegram_message(report)
-```eof
