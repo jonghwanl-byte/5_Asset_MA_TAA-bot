@@ -6,6 +6,7 @@ import os
 import requests
 from datetime import datetime
 import pytz
+import time # [수정] time 라이브러리 임포트 추가
 
 # --- [1. 전략 파라미터 설정] ---
 ASSETS = ['102110.KS', '283580.KS', '453810.KS', '148070.KS', '385560.KS']
@@ -58,7 +59,6 @@ def get_daily_signals_and_report():
     
     total_scores = (sig_20 + sig_120 + sig_200)
     
-    # DataFrame.map 사용 (applymap 경고 수정)
     scalars = total_scores.map(lambda x: SCALAR_MAP.get(x, 0.0))
     
     today_scalars = scalars.iloc[-1]
@@ -81,13 +81,10 @@ def get_daily_signals_and_report():
     yesterday = all_prices_df.index[-1]
     kst = pytz.timezone('Asia/Seoul')
     
-    # tz-naive Timestamp 오류 해결
     if yesterday.tzinfo is None:
         yesterday_kst = kst.localize(yesterday)
     else:
         yesterday_kst = yesterday.astimezone(kst)
-    
-    # [수정] 메시지를 2개로 분할
     
     # --- [메시지 1: 핵심 요약] ---
     report_summary = []
@@ -196,7 +193,6 @@ def get_daily_signals_and_report():
             
             report_detail.append(f"* {window}일: {state_emoji} (이격도: {disparity:+.1%}) {state_change}")
     
-    # [수정] 2개의 리포트를 반환
     return "\n".join(report_summary), "\n".join(report_detail)
 
 # --- [5. 메인 실행] ---
@@ -216,7 +212,7 @@ if __name__ == "__main__":
         # 3. 텔레그램으로 전송 (2개 메시지 순차 전송)
         success1 = send_telegram_message(TELEGRAM_TOKEN, TELEGRAM_TO, report_summary)
         # 텔레그램 API 과부하 방지를 위해 1초 대기
-        time.sleep(1) 
+        time.sleep(1) # [수정] 이 코드를 위해 import time 이 필요합니다.
         success2 = send_telegram_message(TELEGRAM_TOKEN, TELEGRAM_TO, report_detail)
         
         if success1 and success2:
@@ -227,7 +223,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"전략 실행 중 오류가 발생했습니다: {e}", file=sys.stderr)
         
-        # [수정] 텔레그램 'parse entities' 오류 방지
         kst = pytz.timezone('Asia/Seoul')
         error_message = f"🚨 TAA Bot 실행 실패 🚨\n({datetime.now(kst).strftime('%Y-%m-%d %H:%M')})\n\n오류:\n{e}"
         
