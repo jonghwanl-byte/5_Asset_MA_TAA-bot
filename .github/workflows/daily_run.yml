@@ -13,8 +13,8 @@ on:
         default: 'FALSE'
         type: choice
         options:
-        - 'TRUE'
-        - 'FALSE'
+          - 'TRUE'
+          - 'FALSE'
 
 jobs:
   run_daily_strategy:
