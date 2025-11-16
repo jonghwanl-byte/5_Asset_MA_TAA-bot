@@ -33,15 +33,15 @@ TELEGRAM_TOKEN
 
 발송에 사용할 텔레그램 봇 토큰입니다.
 
-TELEGRAM_CHAT_ID
+TELEGRAM_TO
 
 메시지를 수신할 채팅방 ID (개인 ID 또는 그룹 ID)입니다.
 
-3. 스케줄링 및 실행
+3. 스케줄링 및 실행 (daily_run.yml)
 
-main.py는 **외부 스케줄러(Cron, GitHub Actions 등)**에 의해 매일 오전 8시(KST)에 실행되도록 설정해야 합니다.
+daily_signal_generator.py는 **외부 스케줄러(Cron, GitHub Actions 등)**에 의해 매일 오전 8시(KST)에 실행되도록 설정해야 합니다.
 
-main.py 내부 로직이 자동으로 주말 여부를 판단하여 다음과 같이 처리합니다:
+daily_signal_generator.py 내부 로직이 자동으로 주말 여부를 판단하여 다음과 같이 처리합니다:
 
 실행 시점
 
@@ -69,4 +69,4 @@ main.py 내부 로직이 자동으로 주말 여부를 판단하여 다음과 �
 
 실행 명령어:
 
-python main.py
+python daily_signal_generator.py
