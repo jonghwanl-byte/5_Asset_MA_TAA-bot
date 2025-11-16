@@ -6,11 +6,29 @@ import os
 import requests
 from datetime import datetime
 import pytz
-import time # [수정] time 라이브러리 임포트 추가
+import time # time 라이브러리 임포트
 
 # --- [1. 전략 파라미터 설정] ---
-ASSETS = ['102110.KS', '283580.KS', '453810.KS', '148070.KS', '385560.KS']
-BASE_WEIGHTS = {ticker: 0.20 for ticker in ASSETS} # 20% 균등 배분
+
+# [수정] 한글 이름과 티커 매핑
+ASSET_NAMES = [
+    '한국 주식', # 102110.KS
+    '중국 주식', # 283580.KS
+    '인도 주식', # 453810.KS
+    '채권 10년', # 148070.KS
+    '채권 30년'  # 385560.KS
+]
+TICKER_MAP = {
+    '한국 주식': '102110.KS',
+    '중국 주식': '283580.KS',
+    '인도 주식': '453810.KS',
+    '채권 10년': '148070.KS',
+    '채권 30년': '385560.KS'
+}
+TICKER_LIST = list(TICKER_MAP.values()) # yfinance 다운로드용
+
+# [수정] 기본 비중 (한글 이름 기준)
+BASE_WEIGHTS = {name: 0.20 for name in ASSET_NAMES} # 20% 균등 배분
 MA_WINDOWS = [20, 120, 200]
 SCALAR_MAP = {3: 1.0, 2: 0.75, 1: 0.50, 0: 0.0} # 시나리오 A
 
@@ -44,23 +62,31 @@ def send_telegram_message(token, chat_id, message, parse_mode='Markdown'):
 def get_daily_signals_and_report():
     
     print("... 최신 시장 데이터 다운로드 중 ...")
-    data_full = yf.download(ASSETS, period="400d", progress=False)
+    # [수정] 다운로드는 티커 리스트로 받음
+    data_full = yf.download(TICKER_LIST, period="400d", progress=False)
     
     if data_full.empty:
         raise ValueError("데이터 다운로드에 실패했습니다.")
     
-    all_prices_df = data_full['Close'].ffill()
+    all_prices_df_raw = data_full['Close'].ffill()
+    
+    # [수정] 컬럼명을 티커 -> 한글 이름으로 변경
+    all_prices_df = all_prices_df_raw.rename(columns={v: k for k, v in TICKER_MAP.items()})
     
     # --- [4. MA 및 신호 계산 (Hysteresis 없음)] ---
     
+    # 각 MA별 신호 (1=ON, 0=OFF)
     sig_20 = (all_prices_df > all_prices_df.rolling(window=20).mean()).astype(int)
     sig_120 = (all_prices_df > all_prices_df.rolling(window=120).mean()).astype(int)
     sig_200 = (all_prices_df > all_prices_df.rolling(window=200).mean()).astype(int)
     
+    # 총 점수 (0~3점)
     total_scores = (sig_20 + sig_120 + sig_200)
     
+    # DataFrame.map 사용 (applymap 경고 수정)
     scalars = total_scores.map(lambda x: SCALAR_MAP.get(x, 0.0))
     
+    # '오늘' (어제 마감) / '어제' (그제 마감) 데이터 추출
     today_scalars = scalars.iloc[-1]
     yesterday_scalars = scalars.iloc[-2]
     
@@ -81,6 +107,7 @@ def get_daily_signals_and_report():
     yesterday = all_prices_df.index[-1]
     kst = pytz.timezone('Asia/Seoul')
     
+    # tz-naive Timestamp 오류 해결
     if yesterday.tzinfo is None:
         yesterday_kst = kst.localize(yesterday)
     else:
@@ -108,9 +135,9 @@ def get_daily_signals_and_report():
     # [2] 오늘 목표 비중
     report_summary.append("💰 [1] 오늘 목표 비중 (신규)")
     
-    for ticker in ASSETS:
-        emoji = "🎯" if today_weights[ticker] != yesterday_weights[ticker] else "*"
-        report_summary.append(f" {emoji} {ticker}: {today_weights[ticker]:.1%}")
+    for name in ASSET_NAMES:
+        emoji = "🎯" if today_weights[name] != yesterday_weights[name] else "*"
+        report_summary.append(f" {emoji} {name}: {today_weights[name]:.1%}")
     
     cash_emoji = "🎯" if abs(today_total_cash - yesterday_total_cash) > 0.0001 else "*"
     report_summary.append(f" {cash_emoji} 현금 (Cash): {today_total_cash:.1%}")
@@ -138,8 +165,8 @@ def get_daily_signals_and_report():
 
         return f"{ticker_str}: {yesterday_str} -> {today_str} | {change_str}"
 
-    for ticker in ASSETS:
-        report_summary.append(format_change_row(ticker, yesterday_weights[ticker], today_weights[ticker]))
+    for name in ASSET_NAMES:
+        report_summary.append(format_change_row(name, yesterday_weights[name], today_weights[name]))
     
     report_summary.append(format_change_row('현금', yesterday_total_cash, today_total_cash))
     report_summary.append("---------------------------------------")
@@ -156,8 +183,8 @@ def get_daily_signals_and_report():
         emoji = "🔴" if change >= 0 else "🔵"
         return f"{emoji} {ticker_name}: {price:.1f} ({change:+.1%})"
         
-    for ticker in ASSETS:
-        report_detail.append(f"{format_price_line(ticker, today_prices[ticker], price_change[ticker])}")
+    for name in ASSET_NAMES:
+        report_detail.append(f"{format_price_line(name, today_prices[name], price_change[name])}")
     
     report_detail.append("\n" + "---")
     
@@ -165,17 +192,17 @@ def get_daily_signals_and_report():
     report_detail.append("🔍 [4] MA 신호 상세 (오늘 기준)")
     report_detail.append(f"(단순 돌파 룰 적용)")
     
-    for ticker in ASSETS:
-        score = total_scores[ticker].iloc[-1]
+    for name in ASSET_NAMES:
+        score = total_scores[name].iloc[-1]
         status_emoji = "🟢ON" if score > 0 else "🔴OFF"
         
-        report_detail.append(f"\n**{ticker} (신호: {score}/3개 {status_emoji})**")
+        report_detail.append(f"\n**{name} (신호: {score}/3개 {status_emoji})**")
         
         for window in MA_WINDOWS:
             sig_df = locals()[f'sig_{window}']
             
-            today_state_val = sig_df[ticker].iloc[-1]
-            yesterday_state_val = sig_df[ticker].iloc[-2]
+            today_state_val = sig_df[name].iloc[-1]
+            yesterday_state_val = sig_df[name].iloc[-2]
             
             state_emoji = "🟢ON" if today_state_val == 1.0 else "🔴OFF"
             
@@ -183,8 +210,8 @@ def get_daily_signals_and_report():
             elif today_state_val < yesterday_state_val: state_change = "[신규 OFF]"
             else: state_change = "[유지]"
             
-            t_price = today_prices[ticker]
-            ma_val = all_prices_df[ticker].rolling(window=window).mean().iloc[-1]
+            t_price = today_prices[name]
+            ma_val = all_prices_df[name].rolling(window=window).mean().iloc[-1]
             
             if pd.isna(ma_val):
                 disparity = 0.0
@@ -210,13 +237,8 @@ if __name__ == "__main__":
         print("---------------------")
         
         # 3. 텔레그램으로 전송 (2개 메시지 순차 전송)
-        
-        # [수정] 메시지 1(요약본)은 Markdown 서식 사용
         success1 = send_telegram_message(TELEGRAM_TOKEN, TELEGRAM_TO, report_summary, parse_mode='Markdown')
-        
         time.sleep(1) 
-        
-        # [수정] 메시지 2(상세본)는 Markdown 파싱 오류를 피하기 위해 'None'(일반 텍스트)으로 전송
         success2 = send_telegram_message(TELEGRAM_TOKEN, TELEGRAM_TO, report_detail, parse_mode='None')
         
         if success1 and success2:
