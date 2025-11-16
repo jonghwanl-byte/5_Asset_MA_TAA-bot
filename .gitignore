@@ -1,0 +1,26 @@
+Python Environment
+
+pycache/
+*.pyc
+.ipynb_checkpoints/
+venv/
+env/
+
+Data and Logs
+
+*.csv
+*.log
+*.sqlite
+
+OS Generated Files
+
+.DS_Store
+Thumbs.db
+
+Configuration and Secrets
+
+.env
+
+Note: TELEGRAM_TOKEN and TELEGRAM_CHAT_ID are retrieved via environment variables,
+
+but adding .env helps prevent accidental commit of local configuration files.
