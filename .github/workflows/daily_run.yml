@@ -31,16 +31,15 @@ jobs:
 
     - name: ⚙️ 종속성 설치 (requirements.txt)
       run: pip install -r requirements.txt
-
-    # --- 1. MA 전략 실행 및 결과 캡처 (변수 통합) ---
+    
+    # --- 1. MA 전략 실행 및 결과 캡처 ---
     - name: 🚀 MA 전략 실행 및 결과 캡처
       id: strategy_output
+      env:
+        # Python 스크립트 실행에는 CHAT_ID가 필요 없으나, 
+        # TELEGRAM_TOKEN 유효성 테스트를 위해 Secrets 변수는 그대로 둡니다.
+        TEST_MODE: ${{ github.event.inputs.test_mode }}
       run: |
-        # Python 스크립트 실행 환경 변수를 여기서 직접 설정 (YAML 오류 회피)
-        export TEST_MODE=${{ github.event.inputs.test_mode }}
-        export TELEGRAM_TOKEN=${{ secrets.TELEGRAM_TOKEN }}
-        export TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
-        
         # Python 스크립트 실행 결과를 GITHUB_OUTPUT으로 캡처
         echo "report<<EOF" >> $GITHUB_OUTPUT
         python daily_signal_generator.py >> $GITHUB_OUTPUT
@@ -50,7 +49,8 @@ jobs:
     - name: 📩 텔레그램 메시지 전송
       uses: appleboy/telegram-action@master
       with:
-        to: ${{ secrets.TELEGRAM_CHAT_ID }} 
+        # L46: TELEGRAM_CHAT_ID 대신 TELEGRAM_TO Secrets 사용으로 수정
+        to: ${{ secrets.TELEGRAM_TO }} 
         token: ${{ secrets.TELEGRAM_TOKEN }}
         message: ${{ steps.strategy_output.outputs.report }}
         format: markdown 
