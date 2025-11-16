@@ -30,23 +30,21 @@ jobs:
         python-version: '3.x'
 
     - name: ⚙️ 종속성 설치 (requirements.txt)
-      # Python 설치 경로 문제를 해결하기 위해 upgrade와 install을 명시적으로 실행
       run: |
         python -m pip install --upgrade pip
+        # --user 옵션 없이 설치하여 시스템 경로에 라이브러리를 확실히 넣음
         pip install -r requirements.txt
 
-    # --- 1. MA 전략 실행 및 결과 캡처 (환경 PATH 설정 포함) ---
+    # --- 1. MA 전략 실행 및 결과 캡처 (최종 환경 경로 설정) ---
     - name: 🚀 MA 전략 실행 및 결과 캡처
       id: strategy_output
       env:
-        # Python 스크립트 실행에 필요한 환경 변수
         TEST_MODE: ${{ github.event.inputs.test_mode }}
       run: |
-        # 🚨 PYTHONPATH 설정: 설치된 모듈 경로를 Python이 인식하도록 강제 (Exit Code 1 해결 목표)
-        PYTHON_PACKAGES=$(python -c "import site; print(site.getsitepackages()[0] if site.getsitepackages() else '')")
-        export PYTHONPATH=$PYTHON_PACKAGES:$PYTHONPATH
+        # 🚨 핵심 수정: 설치된 라이브러리 경로를 PYTHONPATH에 명시적으로 추가
+        # 이는 'No module named yfinance' 오류를 해결하기 위한 마지막 조치입니다.
+        export PYTHONPATH=$(python -c "import site; print(site.getsitepackages()[0] if site.getsitepackages() else '')")
         
-        # TEST_MODE 변수 export (스크립트에서 사용)
         export TEST_MODE=${{ github.event.inputs.test_mode }}
 
         # 스크립트 실행 (STDERR를 STDOUT으로 리다이렉션하여 오류 캡처)
@@ -65,4 +63,4 @@ jobs:
         token: ${{ secrets.TELEGRAM_TOKEN }}
         message: ${{ steps.strategy_output.outputs.report }}
         format: markdown 
-      if: always() # 스크립트 성공/실패 여부와 관계없이 메시지를 보내도록 설정
+      if: always()
