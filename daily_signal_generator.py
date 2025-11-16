@@ -23,6 +23,8 @@ TICKER_NAMES = {
     '385560.KS': 'RISE KTB 30Y Enhanced', 'Cash': 'Cash (Not Invested)'
 }
 
+# ... (함수 정의 부분은 변경 없음) ...
+
 # --- Performance Calculation Function (for reporting) ---
 def get_cagr(portfolio_returns):
     """Calculates Compound Annual Growth Rate (CAGR)"""
@@ -38,6 +40,7 @@ def run_ma_strategy_for_date(target_date):
     """
     Executes the MA strategy based on data up to the target date and returns the final portfolio state.
     """
+    # ... (함수 본문은 변경 없음) ...
     print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Data analysis started. Base date: {target_date.strftime('%Y-%m-%d')}")
     
     # 1. Download Data (Need sufficient historical data for MA calculation)
@@ -94,16 +97,11 @@ def run_ma_strategy_for_date(target_date):
     # 5. Calculate Previous Day's Strategy Return (for the report)
     if len(prices_df) >= 2:
         yesterday_asset_returns = prices_df.iloc[-1] / prices_df.iloc[-2] - 1
-        # The calculated weights (invested_weights) are applied to the daily asset returns 
-        # to find the strategy's return for the final day.
         daily_return = (invested_weights * yesterday_asset_returns).sum()
     else:
         daily_return = 0.0
 
     return result_weights, f"Previous Day's Strategy Return: {daily_return:.2%}"
-
-# --- Telegram Transmission and Scheduling Logic ---
-# Note: send_telegram_message function is REMOVED as output is captured by GitHub Actions.
 
 def get_target_date():
     """Determines the base date for data analysis."""
@@ -160,24 +158,31 @@ def format_report(target_date, weights, daily_return_info):
 
 if __name__ == "__main__":
     
-    # Record execution time
-    print(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Auto Report execution started.")
-    
-    target_date = get_target_date()
-    
-    if target_date is None:
-        # 주말이므로 실행을 건너뜀 (텔레그램 전송도 안함)
-        sys.exit(0)
-    
-    # 1. Execute MA Strategy and calculate final weights
-    weights, daily_return_info = run_ma_strategy_for_date(target_date)
-    
-    if weights is None:
-        final_output = f"❌ **MA Individual Strategy Report - Failed**\nBase Date: {target_date.strftime('%Y-%m-%d')}\nReason: {daily_return_info}"
-    else:
-        # 2. Format the report
-        final_output = format_report(target_date, weights, daily_return_info)
-    
-    # 3. Send final report content to standard output (captured by GitHub Actions)
-    # 이 내용이 GitHub Actions의 $GITHUB_OUTPUT으로 캡처되어 텔레그램으로 전송됩니다.
-    print(final_output)
+    try:
+        # Record execution time
+        print(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Auto Report execution started.")
+        
+        target_date = get_target_date()
+        
+        if target_date is None:
+            # 주말이므로 실행을 건너뜀 (sys.exit(0)은 yml에서 처리)
+            # 여기서는 아무것도 출력하지 않고 정상 종료
+            pass
+        else:
+            # 1. Execute MA Strategy and calculate final weights
+            weights, daily_return_info = run_ma_strategy_for_date(target_date)
+            
+            if weights is None:
+                final_output = f"❌ **MA Individual Strategy Report - Failed**\nBase Date: {target_date.strftime('%Y-%m-%d')}\nReason: {daily_return_info}"
+            else:
+                # 2. Format the report
+                final_output = format_report(target_date, weights, daily_return_info)
+            
+            # 3. Send final report content to standard output (captured by GitHub Actions)
+            print(final_output)
+
+    except Exception as e:
+        # 치명적인 오류 발생 시 에러 메시지를 출력하여 GitHub Actions가 캡처하도록 함
+        error_output = f"🚨 FATAL PYTHON ERROR 🚨\nError details: {str(e)}"
+        print(error_output, file=sys.stderr)
+        sys.exit(1) # 오류 발생 시 비정상 종료 코드를 반환하여 Actions 로그에 표시
