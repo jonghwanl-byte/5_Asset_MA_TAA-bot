@@ -1,0 +1,97 @@
+import os
+import requests
+import datetime
+from ma_strategy import run_ma_strategy_for_date
+
+# --- 설정 ---
+TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
+
+# 티커 명칭 매핑 (보고서 가독성 향상)
+TICKER_NAMES = {
+    '102110.KS': 'TIGER 200', '283580.KS': 'KODEX 차이나CSI300', 
+    '453810.KS': 'KODEX 인도Nifty50', '148070.KS': 'KIWOOM 국고채 10년', 
+    '385560.KS': 'RISE 국고채 30년 Enhanced', 'Cash': '현금 (미투자)'
+}
+
+def send_telegram_message(message):
+    """텔레그램 봇으로 메시지를 전송하는 함수"""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("경고: TELEGRAM_TOKEN 또는 TELEGRAM_CHAT_ID가 설정되지 않았습니다. 메시지를 건너뜁니다.")
+        print(f"\n[보고서 내용 미리보기]\n{message}")
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        'chat_id': TELEGRAM_CHAT_ID,
+        'text': message,
+        'parse_mode': 'Markdown'
+    }
+    try:
+        response = requests.post(url, data=payload, timeout=10)
+        response.raise_for_status()
+        print("텔레그램 메시지 전송 성공!")
+    except requests.exceptions.RequestException as e:
+        print(f"텔레그램 메시지 전송 실패: {e}")
+
+def get_target_date():
+    """
+    현재 요일을 확인하고, 데이터 분석 기준 날짜를 결정합니다.
+    (토요일, 일요일, 월요일 8시 발송 시 금요일 종가 기준)
+    """
+    today = datetime.date.today()
+    
+    if today.weekday() == 0:  # 월요일 (weekday()는 월요일이 0)
+        # 월요일은 지난 금요일 종가 기준 (금요일은 4)
+        return today - datetime.timedelta(days=3)
+    elif today.weekday() in [5, 6]:  # 토요일(5), 일요일(6) - 발송하지 않음
+        return None
+    else:  # 화요일부터 금요일 (어제 종가 기준)
+        return today - datetime.timedelta(days=1)
+
+def format_report(target_date, weights, daily_return_info):
+    """보고서 메시지를 Markdown 형식으로 포맷팅합니다."""
+    
+    # 비중을 내림차순으로 정렬
+    sorted_weights = sorted(weights.items(), key=lambda item: item[1], reverse=True)
+    
+    report_lines = [
+        f"🌟 **MA 개별 전략 일일 보고서 ({target_date.strftime('%Y년 %m월 %d일 기준')})**",
+        "---------------------------------------------------",
+        "✅ **전략 개요:** 5개 자산 (주식 3종 + 채권 2종)에 20일/120일/200일 MA 추세 신호 기반으로 개별 비중 조절 (현금화 포함)",
+        f"📅 **{daily_return_info}**",
+        "",
+        "### 💰 오늘 포트폴리오 비중 (Max 100%)",
+        "| 자산명 | 투자 비중 |",
+        "| :--- | :--- |"
+    ]
+    
+    for ticker, weight in sorted_weights:
+        name = TICKER_NAMES.get(ticker, ticker)
+        report_lines.append(f"| {name} | **{weight:.2%}** |")
+        
+    report_lines.append("---------------------------------------------------")
+    report_lines.append("⚠️ **참고:** MDD -3.34%, CAGR 16.31% (2024년 3월~2025년 11월 백테스트 기준)")
+    
+    return "\n".join(report_lines)
+
+if __name__ == "__main__":
+    
+    target_date = get_target_date()
+    
+    if target_date is None:
+        print("오늘은 주말(토/일)이므로 보고서를 발송하지 않습니다.")
+    else:
+        print(f"분석 기준 날짜: {target_date.strftime('%Y-%m-%d')}")
+        
+        # 1. MA 전략 실행 및 최종 비중 계산
+        weights, daily_return_info = run_ma_strategy_for_date(target_date)
+        
+        if weights is None:
+            report = f"❌ **MA 개별 전략 보고서 - 실패**\n분석 기준일: {target_date.strftime('%Y-%m-%d')}\n사유: {daily_return_info}"
+        else:
+            # 2. 보고서 포맷팅
+            report = format_report(target_date, weights, daily_return_info)
+        
+        # 3. 텔레그램 전송
+        send_telegram_message(report)
