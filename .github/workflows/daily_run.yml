@@ -1,31 +1,31 @@
 name: Daily MA Strategy Report
 
 on:
-schedule:
-# 매일 23:00 UTC에 실행 (한국 시간 KST = UTC + 9, 즉 오전 8시)
-- cron: '0 23 * * *'
-workflow_dispatch: # Actions 탭에서 수동 실행 허용
+  schedule:
+    # 매일 23:00 UTC에 실행 (한국 시간 KST = UTC + 9, 즉 오전 8시)
+    - cron: '0 23 * * *'
+  workflow_dispatch: # Actions 탭에서 수동 실행 허용
 
 jobs:
-run_daily_strategy:
-# 작업 실행 환경 지정
-runs-on: ubuntu-latest
+  run_daily_strategy:
+    # 작업 실행 환경 지정
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📦 코드 체크아웃
+      uses: actions/checkout@v3
 
-steps:
-- name: 📦 코드 체크아웃
-  uses: actions/checkout@v3
+    - name: 🐍 Python 환경 설정
+      uses: actions/setup-python@v3
+      with:
+        python-version: '3.x'
 
-- name: 🐍 Python 환경 설정
-  uses: actions/setup-python@v3
-  with:
-    python-version: '3.x'
+    - name: ⚙️ 종속성 설치 (requirements.txt)
+      run: pip install -r requirements.txt
 
-- name: ⚙️ 종속성 설치 (requirements.txt)
-  run: pip install -r requirements.txt
-
-- name: 🚀 MA 전략 실행 및 텔레그램 발송
-  # TELEGRAM_TOKEN과 TELEGRAM_CHAT_ID 환경 변수를 GitHub Secrets에 설정해야 합니다.
-  env:
-    TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-    TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-  run: python daily_signal_generator.py
+    - name: 🚀 MA 전략 실행 및 텔레그램 발송
+      # TELEGRAM_TOKEN과 TELEGRAM_CHAT_ID 환경 변수를 GitHub Secrets에 설정해야 합니다.
+      env:
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      run: python daily_signal_generator.py
