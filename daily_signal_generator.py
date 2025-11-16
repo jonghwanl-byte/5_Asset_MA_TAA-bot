@@ -17,23 +17,7 @@ SCALAR_MAP = {3: 1.0, 2: 0.75, 1: 0.50, 0: 0.0} # 시나리오 A
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 TELEGRAM_TO = os.environ.get('TELEGRAM_TO')
 
-# --- [2. 주말 확인 로직] ---
-def check_weekend():
-    """KST 기준 토/일요일인지 확인"""
-    try:
-        kst = pytz.timezone('Asia/Seoul')
-        now = datetime.now(kst)
-        weekday = now.weekday() # 월요일=0, 일요일=6
-        
-        if weekday == 5 or weekday == 6: # 토요일(5) 또는 일요일(6)
-            print(f"오늘은 {now.strftime('%A')}(주말)이므로 알림을 전송하지 않습니다.")
-            return True
-        return False
-    except Exception as e:
-        print(f"시간대 확인 중 오류 발생: {e}", file=sys.stderr)
-        return True # 오류 시 안전하게 실행 중지
-
-# --- [3. 텔레그램 전송 함수] ---
+# --- [2. 텔레그램 전송 함수] ---
 def send_telegram_message(token, chat_id, message):
     """텔레그램으로 메시지를 전송합니다."""
     if not token or not chat_id:
@@ -55,10 +39,11 @@ def send_telegram_message(token, chat_id, message):
         print(f"텔레그램 전송 실패: {e}\n응답: {e.response.text}", file=sys.stderr)
         return False
 
-# --- [4. 일일 신호 계산 함수] ---
+# --- [3. 일일 신호 계산 함수] ---
 def get_daily_signals_and_report():
     
     print("... 최신 시장 데이터 다운로드 중 ...")
+    # MA 계산을 위해 최소 200일 + 200일(버퍼) 데이터 다운로드
     data_full = yf.download(ASSETS, period="400d", progress=False)
     
     if data_full.empty:
@@ -66,7 +51,7 @@ def get_daily_signals_and_report():
     
     all_prices_df = data_full['Close'].ffill()
     
-    # --- [3. MA 및 신호 계산 (Hysteresis 없음)] ---
+    # --- [4. MA 및 신호 계산 (Hysteresis 없음)] ---
     
     # 각 MA별 신호 (1=ON, 0=OFF)
     sig_20 = (all_prices_df > all_prices_df.rolling(window=20).mean()).astype(int)
@@ -86,7 +71,7 @@ def get_daily_signals_and_report():
     today_prices = all_prices_df.iloc[-1]
     price_change = all_prices_df.pct_change().iloc[-1]
 
-    # --- [4. 최종 비중 계산] ---
+    # --- [5. 최종 비중 계산] ---
     today_weights = (today_scalars * pd.Series(BASE_WEIGHTS)).to_dict()
     yesterday_weights = (yesterday_scalars * pd.Series(BASE_WEIGHTS)).to_dict()
     
@@ -95,12 +80,15 @@ def get_daily_signals_and_report():
     
     is_rebalancing_needed = not (today_scalars.equals(yesterday_scalars))
     
-    # --- [5. 알림 메시지 생성] ---
+    # --- [6. 알림 메시지 생성] ---
     
     yesterday = all_prices_df.index[-1]
+    kst = pytz.timezone('Asia/Seoul')
+    yesterday_kst = yesterday.astimezone(kst) # KST로 변환
+    
     report = []
     report.append(f"🔔 TAA Bot - 5 Asset MA Strategy")
-    report.append(f"({yesterday.strftime('%Y-%m-%d %A')} 마감 기준)")
+    report.append(f"({yesterday_kst.strftime('%Y-%m-%d %A')} 마감 기준)") # KST 기준 날짜/요일
 
     # [1] 리밸런싱 신호
     if is_rebalancing_needed:
@@ -201,12 +189,14 @@ def get_daily_signals_and_report():
     
     return "\n".join(report)
 
-# --- [6. 메인 실행] ---
+# --- [5. 메인 실행] ---
 if __name__ == "__main__":
     
-    # 0. 주말/휴일 확인
-    if check_weekend():
-        sys.exit(0) # 주말이면 여기서 종료
+    # --- [수정] ---
+    # 0. 주말/휴일 확인 로직 '제거'
+    # if check_weekend():
+    #     sys.exit(0) 
+    # -------------
         
     try:
         # 1. 리포트 생성
@@ -226,6 +216,7 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"전략 실행 중 오류가 발생했습니다: {e}", file=sys.stderr)
         # 텔레그램으로 오류 메시지 전송 시도
-        error_message = f"🚨 TAA Bot 실행 실패 🚨\n({datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y-%m-%d %H:%M')})\n\n오류: {e}"
+        kst = pytz.timezone('Asia/Seoul')
+        error_message = f"🚨 TAA Bot 실행 실패 🚨\n({datetime.now(kst).strftime('%Y-%m-%d %H:%M')})\n\n오류: {e}"
         send_telegram_message(TELEGRAM_TOKEN, TELEGRAM_TO, error_message)
         sys.exit(1)
