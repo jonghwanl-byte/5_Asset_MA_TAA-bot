@@ -1,3 +1,12 @@
+2.  **메시지 통합:** 요약본과 상세본을 나누지 않고 **하나의 긴 메시지**로 합쳐서 한 번에 전송합니다.
+
+아래 코드로 `daily_signal_generator.py` 파일을 덮어쓰시면 됩니다.
+
+---
+
+### 📄 `daily_signal_generator.py` (수정본)
+
+```python
 import yfinance as yf
 import numpy as np
 import pandas as pd
@@ -12,8 +21,8 @@ import time
 
 # 한글 이름과 티커 매핑
 ASSET_NAMES = [
-    '한국 주식', # 102110.KS (TIGER 200)
-    '중국 주식', # 283580.KS (TIGER 200 중공업 -> 예시 변경 필요시 수정)
+    '한국 주식', # 102110.KS
+    '중국 주식', # 283580.KS
     '인도 주식', # 453810.KS
     '채권 10년', # 148070.KS
     '채권 30년'  # 385560.KS
@@ -43,10 +52,11 @@ def send_telegram_message(token, chat_id, message, parse_mode='Markdown'):
         print("텔레그램 TOKEN 또는 CHAT_ID가 설정되지 않았습니다.", file=sys.stderr)
         return False
         
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){token}/sendMessage"
+    # 메시지 통합으로 길이가 길어질 수 있으므로 타임아웃 여유 있게 설정
     payload = {'chat_id': chat_id, 'text': message, 'parse_mode': parse_mode}
     try:
-        response = requests.post(url, json=payload, timeout=10)
+        response = requests.post(url, json=payload, timeout=15)
         response.raise_for_status()
         print("텔레그램 메시지 전송 성공.")
         return True
@@ -54,7 +64,7 @@ def send_telegram_message(token, chat_id, message, parse_mode='Markdown'):
         print(f"텔레그램 전송 실패: {e}", file=sys.stderr)
         return False
 
-# --- [3. 일일 신호 계산 함수] ---
+# --- [3. 일일 신호 계산 및 리포트 생성] ---
 def get_daily_signals_and_report():
     
     print("... 최신 시장 데이터 다운로드 중 ...")
@@ -133,7 +143,7 @@ def get_daily_signals_and_report():
     
     is_rebalancing_needed = not (today_scalars.equals(yesterday_scalars))
     
-    # --- [6. 알림 메시지 생성] ---
+    # --- [6. 리포트 작성 (통합)] ---
     
     yesterday = all_prices_df.index[-1]
     kst = pytz.timezone('Asia/Seoul')
@@ -142,40 +152,37 @@ def get_daily_signals_and_report():
     else:
         yesterday_kst = yesterday.astimezone(kst)
     
-    # 6-1. 요약 메시지 (summary)
-    report_summary = []
-    report_summary.append(f"🔔 TAA Bot - 5 Asset (Hysteresis 3%)")
-    report_summary.append(f"({yesterday_kst.strftime('%Y-%m-%d %A')} 마감 기준)")
+    # 하나의 리스트에 모든 내용을 담습니다
+    report = []
+    report.append(f"🔔 **TAA Bot - 5 Asset (Hysteresis 3%)**")
+    report.append(f"({yesterday_kst.strftime('%Y-%m-%d %A')} 마감 기준)")
 
+    # [1] 신호
     if is_rebalancing_needed:
-        report_summary.append("\n" + "🔼 ====================== 🔼")
-        report_summary.append("    리밸런싱 신호: \"매매 필요\"")
-        report_summary.append("🔼 ====================== 🔼")
-        report_summary.append("(MA 신호 변경으로 목표 비중이 어제와 다릅니다)")
+        report.append("\n🔼 **리밸런싱: 매매 필요**")
+        report.append("(목표 비중이 변경되었습니다)")
     else:
-        report_summary.append("\n" + "🟢 ====================== 🟢")
-        report_summary.append("    리밸런싱 신호: \"매매 불필요\"")
-        report_summary.append("🟢 ====================== 🟢")
-        report_summary.append("(모든 MA 신호가 어제와 동일하게 유지되었습니다)")
+        report.append("\n🟢 **리밸런싱: 매매 불필요**")
+        report.append("(비중 유지)")
     
-    report_summary.append("\n" + "---")
-    report_summary.append("💰 [1] 오늘 목표 비중 (신규)")
+    report.append("\n" + "-"*20)
+
+    # [2] 목표 비중
+    report.append("💰 **[1] 오늘 목표 비중**")
     
     for name in ASSET_NAMES:
         emoji = "🎯" if today_weights[name] != yesterday_weights[name] else "*"
-        report_summary.append(f" {emoji} {name}: {today_weights[name]:.1%}")
+        report.append(f"{emoji} {name}: {today_weights[name]:.1%}")
     
     cash_emoji = "🎯" if abs(today_total_cash - yesterday_total_cash) > 0.0001 else "*"
-    report_summary.append(f" {cash_emoji} 현금 (Cash): {today_total_cash:.1%}")
+    report.append(f"{cash_emoji} 현금 (Cash): {today_total_cash:.1%}")
     
-    report_summary.append("\n" + "---")
-    
-    # [2] 비중 변경 상세 (테이블 포맷 수정)
-    report_summary.append("📊 [2] 비중 변경 상세 (매매 신호)")
-    report_summary.append("```")
-    report_summary.append("자산      (어제)   (오늘)  | (변경폭)")
-    report_summary.append("------------------------------------")
+    report.append("\n" + "-"*20)
 
+    # [3] 비중 변경 상세 (박스 제거)
+    report.append("📊 **[2] 비중 변경 상세**")
+    # report.append("```") <-- 박스(코드블록) 제거
+    
     def format_change_row(name, yesterday, today):
         delta = today - yesterday
         if abs(delta) < 0.0001:
@@ -184,85 +191,67 @@ def get_daily_signals_and_report():
             emoji = "🔼" if delta > 0 else "🔽"
             change_str = f"{emoji} {delta:+.1%}"
         
-        # 한글 이름 길이 고려하여 정렬 (ljust 9)
-        name_str = name.ljust(9)
-        yesterday_str = f"{yesterday:.1%}".rjust(7)
-        today_str = f"{today:.1%}".rjust(7)
-        change_str = change_str.rjust(10)
-        
-        return f"{name_str}: {yesterday_str} -> {today_str} | {change_str}"
+        # 박스가 없으므로 공백을 활용해 최대한 정렬 시도
+        # (스마트폰 폰트에 따라 완벽한 정렬은 어려울 수 있음)
+        return f"{name}: {yesterday:.1%} → {today:.1%} | {change_str}"
 
     for name in ASSET_NAMES:
-        report_summary.append(format_change_row(name, yesterday_weights[name], today_weights[name]))
+        report.append(format_change_row(name, yesterday_weights[name], today_weights[name]))
     
-    report_summary.append(format_change_row('현금', yesterday_total_cash, today_total_cash))
-    report_summary.append("------------------------------------")
-    report_summary.append("```")
+    report.append(format_change_row('현금', yesterday_total_cash, today_total_cash))
+    # report.append("```") <-- 박스 제거
     
-    # 6-2. 상세 메시지 (detail)
-    report_detail = []
-    report_detail.append(f"--- (상세 정보: {yesterday_kst.strftime('%Y-%m-%d')}) ---")
+    report.append("\n" + "-"*20)
     
-    # 전일 시장 현황
-    report_detail.append("\n" + "📈 [3] 전일 시장 현황")
+    # [4] 시장 현황
+    report.append("📈 **[3] 전일 시장 현황**")
     today_prices = all_prices_df.iloc[-1]
     price_change = all_prices_df.pct_change().iloc[-1]
     
-    def format_price_line(name, price, change):
-        emoji = "🔴" if change >= 0 else "🔵"
-        return f"{emoji} {name}: {price:,.0f} ({change:+.1%})"
-        
     for name in ASSET_NAMES:
-        report_detail.append(f"{format_price_line(name, today_prices[name], price_change[name])}")
+        emoji = "🔴" if price_change[name] >= 0 else "🔵"
+        report.append(f"{emoji} {name}: {today_prices[name]:,.0f} ({price_change[name]:+.1%})")
     
-    # MA 신호 상세
-    report_detail.append("\n" + "---")
-    report_detail.append("🔍 [4] MA 신호 상세 (오늘 기준)")
-    report_detail.append(f"(이격도 +/- {N_BAND:.1%} 룰 적용)")
+    report.append("\n" + "-"*20)
+
+    # [5] MA 상세
+    report.append("🔍 **[4] MA 신호 상세**")
+    report.append(f"(이격도 +/- {N_BAND:.1%} 룰)")
     
     for name in ASSET_NAMES:
         score = int(today_scalars[name] * 4 / (4/3))
         status_emoji = "🟢ON" if score > 0 else "🔴OFF"
-        
-        report_detail.append(f"\n**{name} (신호: {score}/3개 {status_emoji})**")
+        report.append(f"\n**{name} ({score}/3 {status_emoji})**")
         
         for window in MA_WINDOWS:
             ma_key = f"{name}_{window}"
-            today_state_val = today_ma_states_dict[ma_key]
-            yesterday_state_val = yesterday_ma_states_dict[ma_key]
+            today_state = today_ma_states_dict[ma_key]
+            yesterday_state = yesterday_ma_states_dict[ma_key]
             
-            state_emoji = "🟢ON" if today_state_val == 1.0 else "🔴OFF"
+            state_emoji = "ON" if today_state == 1.0 else "OFF"
             
-            if today_state_val > yesterday_state_val: state_change = "[신규 ON]"
-            elif today_state_val < yesterday_state_val: state_change = "[신규 OFF]"
-            else: state_change = "[유지]"
+            if today_state > yesterday_state: state_change = "[신규 ON]"
+            elif today_state < yesterday_state: state_change = "[신규 OFF]"
+            else: state_change = ""
             
             t_price = today_prices[name]
             ma_val = ma_lines[ma_key].iloc[-1]
             disparity = (t_price / ma_val) - 1.0
             
-            # 마이너스(-) 기호 유지
-            report_detail.append(f"* {window}일: {state_emoji} (이격도: {disparity:+.1%}) {state_change}")
-    
-    return "\n".join(report_summary), "\n".join(report_detail)
+            report.append(f"- {window}일: {state_emoji} ({disparity:.1%}) {state_change}")
+
+    # 전체 내용을 하나의 문자열로 합쳐서 반환
+    return "\n".join(report)
 
 # --- [7. 메인 실행] ---
 if __name__ == "__main__":
     try:
-        # pandas 출력 옵션
-        pd.set_option('display.width', 1000)
-        
         # 1. 리포트 생성
-        report_summary, report_detail = get_daily_signals_and_report()
-        print(report_summary)
-        print(report_detail)
+        full_report = get_daily_signals_and_report()
+        print(full_report)
         
-        # 2. 텔레그램 전송
-        success1 = send_telegram_message(TELEGRAM_TOKEN, TELEGRAM_TO, report_summary, parse_mode='Markdown')
-        time.sleep(1) 
-        success2 = send_telegram_message(TELEGRAM_TOKEN, TELEGRAM_TO, report_detail, parse_mode='None') # 상세정보는 None으로 전송
-        
-        if success1 and success2:
+        # 2. 텔레그램 전송 (한 번만 호출)
+        if send_telegram_message(TELEGRAM_TOKEN, TELEGRAM_TO, full_report, parse_mode='Markdown'):
             print("전송 완료.")
         else:
             raise Exception("텔레그램 전송 실패")
