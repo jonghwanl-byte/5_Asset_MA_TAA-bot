@@ -15,11 +15,11 @@ jobs:
     steps:
       # 1. GitHub 저장소의 코드를 서버로 가져옵니다
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # 2. Python 3.10 환경을 설정합니다
       - name: Set up Python 3.10
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
           python-version: '3.10'
 
