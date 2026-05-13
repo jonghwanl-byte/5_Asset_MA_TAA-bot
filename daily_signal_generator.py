@@ -17,7 +17,7 @@ TICKER_MAP = {
 TICKER_LIST = list(TICKER_MAP.values())
 BASE_WEIGHTS = {name: 0.20 for name in ASSET_NAMES}
 MA_WINDOWS = [20, 120, 200]
-N_BAND = 0.03
+N_BAND = 0.025
 SCALAR_MAP = {3: 1.0, 2: 0.75, 1: 0.50, 0: 0.0}
 
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
