@@ -18,7 +18,11 @@ TICKER_MAP = {
 TICKER_LIST = list(TICKER_MAP.values())
 BASE_WEIGHTS = {name: 0.20 for name in ASSET_NAMES}
 MA_WINDOWS = [20, 120, 200]
-N_BAND = 0.02
+
+# [변경 완료] 비대칭 이격도 밴드 적용 (매수 +3.0% / 매도 -2.0%)
+UPPER_BAND_MULT = 1.030  
+LOWER_BAND_MULT = 0.980  
+
 SCALAR_MAP = {3: 1.0, 2: 0.5, 1: 0.25, 0: 0.0}
 
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
@@ -46,10 +50,10 @@ def get_daily_signals_and_report():
     all_prices_df_raw = data_full['Close'].ffill()
     all_prices_df = all_prices_df_raw.rename(columns={v: k for k, v in TICKER_MAP.items()})
     
-    # 이격도 및 이동평균 계산
+    # 이격도 및 이동평균 계산 (비대칭 밴드 배수 적용)
     ma_lines = {f"{n}_{w}": all_prices_df[n].rolling(window=w).mean() for n in ASSET_NAMES for w in MA_WINDOWS}
-    upper_bands = {k: v * (1.0 + N_BAND) for k, v in ma_lines.items()}
-    lower_bands = {k: v * (1.0 - N_BAND) for k, v in ma_lines.items()}
+    upper_bands = {k: v * UPPER_BAND_MULT for k, v in ma_lines.items()}
+    lower_bands = {k: v * LOWER_BAND_MULT for k, v in ma_lines.items()}
 
     yesterday_ma_states = {f"{n}_{w}": 0.0 for n in ASSET_NAMES for w in MA_WINDOWS}
     yesterday_ma_states_dict = {}
@@ -86,7 +90,7 @@ def get_daily_signals_and_report():
     kst = pytz.timezone('Asia/Seoul')
     dt_str = all_prices_df.index[-1].astimezone(kst).strftime('%Y-%m-%d %A') if all_prices_df.index[-1].tzinfo else kst.localize(all_prices_df.index[-1]).strftime('%Y-%m-%d %A')
     
-    report = [f"[ TAA Bot - 5 Asset (Hysteresis 3%) ]", f"기준일: {dt_str} 마감"]
+    report = [f"[ TAA Bot - 5 Asset (Hysteresis +3%/-2%) ]", f"기준일: {dt_str} 마감"]
     report.append("\n[!] 리밸런싱: 필요" if is_rebalancing else "\n[-] 리밸런싱: 불필요")
     report.append("-" * 25 + "\n[1] 오늘 목표 비중")
     for n in ASSET_NAMES: report.append(f"{'> ' if today_w[n] != yesterday_w[n] else '  '}{n}: {today_w[n]:.1%}")
@@ -107,7 +111,15 @@ def get_daily_signals_and_report():
 
     report.append("\n" + "-" * 25 + "\n[4] MA 신호 상세")
     for n in ASSET_NAMES:
-        score = int(today_scalars[n] * 3 / 1.0) if today_scalars[n] > 0 else 0
+        # 안전한 스코어 계산 로직 (에러 방지)
+        scalar_val = today_scalars.get(n, 0.0)
+        
+        # SCALAR_MAP 역추적 로직 개선
+        if scalar_val == 1.0: score = 3
+        elif scalar_val == 0.5: score = 2
+        elif scalar_val == 0.25: score = 1
+        else: score = 0
+            
         status = "ON" if score > 0 else "OFF"
         report.append(f"\n* {n} ({score}/3 {status})")
         for w in MA_WINDOWS:
