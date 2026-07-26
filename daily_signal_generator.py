@@ -12,13 +12,14 @@ import time
 ASSET_NAMES = ['한국 주식', '중국 주식', '일본 주식', '인도 주식', '채권 30년', '채권 10년']
 TICKER_MAP = {
     '한국 주식': '102110.KS', '중국 주식': '283580.KS', '일본 주식': '241180.KS',
-    '인도 주식': '453810.KS', '채권 30년': '385560.KS', '채권 10년': '148070.KS'
+    '인도 주식': '453810.KS', '채권 30년': '385560.KS', '채권 10년': '148070.KS',
+    'TIME (나스닥 액티브)': '426030.KS'
 }
 TICKER_LIST = list(TICKER_MAP.values())
 BASE_WEIGHTS = {name: 0.20 for name in ASSET_NAMES}
 MA_WINDOWS = [20, 120, 200]
-N_BAND = 0.025
-SCALAR_MAP = {3: 1.0, 2: 0.75, 1: 0.50, 0: 0.0}
+N_BAND = 0.02
+SCALAR_MAP = {3: 1.0, 2: 0.5, 1: 0.25, 0: 0.0}
 
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 TELEGRAM_TO = os.environ.get('TELEGRAM_TO')
