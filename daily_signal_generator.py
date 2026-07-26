@@ -13,7 +13,7 @@ ASSET_NAMES = ['한국 주식', '중국 주식', '일본 주식', '인도 주식
 TICKER_MAP = {
     '한국 주식': '102110.KS', '중국 주식': '283580.KS', '일본 주식': '241180.KS',
     '인도 주식': '453810.KS', '채권 30년': '385560.KS', '채권 10년': '148070.KS',
-    'TIME (나스닥 액티브)': '426030.KS'
+    'TIME (나스닥 주식)': '426030.KS', 'TIME (나스닥 채권)': '0019K0.KS'
 }
 TICKER_LIST = list(TICKER_MAP.values())
 BASE_WEIGHTS = {name: 0.20 for name in ASSET_NAMES}
