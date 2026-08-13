@@ -2,10 +2,8 @@ name: TAA Satellite Signal
 
 on:
   schedule:
-    # UTC 기준입니다. 20:15 UTC = 다음날 05:15 KST
-    # GitHub 예약 실행은 5~20분 지연될 수 있어 15분 앞당겨 둡니다.
-    # UTC 일~금(0-5) = KST 월~토 → 일요일 수신 제외
-    - cron: "15 20 * * 0-5"
+    # 09:00 UTC = 18:00 KST, 평일만 (KRX 종가 15:30 KST 반영 후 충분한 여유)
+    - cron: "0 9 * * 1-5"
   workflow_dispatch:
 
 permissions:
@@ -37,7 +35,11 @@ jobs:
 
       - name: Run signal bot
         env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_TO: ${{ secrets.TELEGRAM_TO }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # 선택: 평가액(KRW)을 넣으면 목표 수량(주)까지 계산
+          PORTFOLIO_VALUE: ${{ vars.PORTFOLIO_VALUE }}
+          # 선택: "false" 로 두면 비중 변동이 있을 때만 전송
+          ALWAYS_SEND: ${{ vars.ALWAYS_SEND }}
           TZ: Asia/Seoul
         run: python satellite_signal.py
