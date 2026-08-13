@@ -1,415 +1,366 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-TAA Satellite Signal Bot
-========================
+TAA Satellite 시그널 — 국내 상장 8자산 동적 배분
 
-QQQ / TLT / GLD 코어 전략과 **별개로** 운용하는 위성(satellite) 8자산 TAA 봇.
+코어(QQQ / TLT / GLD)와 별도 계좌로 독립 운용하는 위성 포트폴리오.
+상태 판정 규칙은 코어와 완전히 동일하고, 유니버스와 비중만 다르다.
 
-시그널 규칙은 코어 TAA와 완전히 동일하다.
+[상태 판정] 자산별로 20/120/200일선 각각 ON/OFF 상태를 추적한다.
+  OFF -> ON : 종가 > MA * 1.015
+  ON -> OFF : 종가 < MA * 0.975
+  그 외      : 전일 상태 유지
 
-    1) 3개 이동평균(20 / 120 / 200일)에 대해 히스테리시스 밴드로 ON/OFF 판정
-         - OFF -> ON : 종가 >  MA * (1 + 0.015)      (매수 진입: +1.5%)
-         - ON  -> OFF: 종가 <  MA * (1 - 0.025)      (매도 이탈: -2.5%)
-         - 밴드 사이(중립 구간)에서는 직전 상태를 그대로 유지
-    2) 자산별 점수 = ON 개수 (0 ~ 3)
-    3) 자산별 비중 = 기준비중(20%) * {3: 1.00, 2: 0.75, 1: 0.50, 0: 0.00}
-                   = 20% / 15% / 10% / 0%
-    4) 자산별 상한 20%만 적용하고 총합 상한은 두지 않는다 (MAX_GROSS = None).
-       각 자산은 다른 자산의 상태와 무관하게 자기 점수로만 비중이 정해지므로,
-       유니버스에 종목을 추가해도 규칙은 동일하다. 잔여분은 현금.
-    5) 시그널은 당일 종가로 산출하고 **다음 거래일에 집행** (lag = 1)
+  진입 문턱(+1.5%)과 이탈 문턱(-2.5%)이 달라 그 사이 구간에서는
+  상태가 바뀌지 않는다(히스테리시스). 횡보장 휩소를 억제한다.
 
-상태(state)는 파일에 저장하지 않는다. 매 실행마다 HISTORY_PERIOD 만큼의
-과거 데이터로 히스테리시스를 처음부터 재현하므로 실행 환경이 초기화되어도
-동일한 결과가 재현된다(stateless / reproducible).
+[포지션 비중] ON 개수로 자산별 기본 비중을 스케일링
+  3개 -> 100%   2개 -> 75%   1개 -> 50%   0개 -> 0%
+  기본 비중은 전 자산 20% 동일 -> 20% / 15% / 10% / 0%
 
-환경변수
-    TELEGRAM_TOKEN : 텔레그램 봇 토큰
-    TELEGRAM_TO    : 수신 chat_id
-    (미설정 시 콘솔로만 출력하고 정상 종료 -> 로컬 테스트용)
+  자산별 상한 20%만 적용하고 총합 상한은 두지 않는다. 각 자산은 다른
+  자산의 상태와 무관하게 자기 점수로만 비중이 정해지므로, 유니버스에
+  종목을 추가해도 규칙이 그대로다. 다만 다수가 동시에 ON이면 합계가
+  100%를 넘을 수 있어 리포트에 초과분과 환산 비중을 함께 표시한다.
+
+[주의] 히스테리시스는 경로 의존적이다. 짧은 기간만 받으면 상태가 0에서
+  출발해 실제와 다른 신호가 나오고, 매일 시작점이 밀려 어제와 오늘의
+  결과가 뒤집힌다. LOOKBACK 은 반드시 충분히 길게 유지할 것.
+
+[집행] 당일 종가로 산출하고 다음 거래일에 집행한다(lag = 1).
+
+환경변수:
+  TELEGRAM_BOT_TOKEN  (필수, 구 TELEGRAM_TOKEN 도 인식)
+  TELEGRAM_CHAT_ID    (필수, 구 TELEGRAM_TO 도 인식)
+  PORTFOLIO_VALUE     (선택) 평가액(KRW). 지정 시 목표 수량(주)까지 계산
+  ALWAYS_SEND         (선택) "false"면 비중 변동이 있을 때만 전송. 기본 true
 """
-
-from __future__ import annotations
 
 import os
 import sys
 import time
-import unicodedata
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence
+from datetime import datetime, timezone, timedelta
 
-import numpy as np
 import pandas as pd
-import pytz
 import requests
 import yfinance as yf
 
+# ===== 설정 ============================================================
+TICKERS = {
+    "102110.KS": "한국 주식",
+    "283580.KS": "중국 주식",
+    "241180.KS": "일본 주식",
+    "453810.KS": "인도 주식",
+    "385560.KS": "채권 30년",
+    "148070.KS": "채권 10년",
+    "426030.KS": "나스닥 주식",
+    "0019K0.KS": "나스닥 채권",
+}
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 1. 전략 파라미터
-# ──────────────────────────────────────────────────────────────────────────────
+BASE_WEIGHT = 0.20                                   # 자산별 상한(=기본 비중)
+BASE_WEIGHTS = {t: BASE_WEIGHT for t in TICKERS}
 
-@dataclass(frozen=True)
-class Asset:
-    name: str
-    ticker: str
+MA_PERIODS = [20, 120, 200]
 
+BAND_UP = 1.015         # 매수(ON) 문턱  MA +1.5%
+BAND_DN = 0.975         # 매도(OFF) 문턱 MA -2.5%
 
-ASSETS: List[Asset] = [
-    Asset("한국 주식",        "102110.KS"),
-    Asset("중국 주식",        "283580.KS"),
-    Asset("일본 주식",        "241180.KS"),
-    Asset("인도 주식",        "453810.KS"),
-    Asset("채권 30년",        "385560.KS"),
-    Asset("채권 10년",        "148070.KS"),
-    Asset("나스닥 주식",      "426030.KS"),
-    Asset("나스닥 채권",      "0019K0.KS"),
-]
+SCALAR_MAP = {3: 1.00, 2: 0.75, 1: 0.50, 0: 0.00}
 
-MA_WINDOWS: Sequence[int] = (20, 120, 200)
-
-# 히스테리시스 밴드 (코어 TAA와 동일: +1.5% / -2.5%)
-UPPER_BAND_MULT = 1.015
-LOWER_BAND_MULT = 0.975
-
-# 배분 규칙: 기준비중 20% * 스칼라 -> 20 / 15 / 10 / 0 %
-BASE_WEIGHT = 0.20
-SCALAR_MAP: Dict[int, float] = {3: 1.00, 2: 0.75, 1: 0.50, 0: 0.00}
-
-# 위험자산 총합 상한.
-#   None = 상한 없음. 각 자산은 오직 자신의 점수로만 비중이 결정되며(자산별 최대 20%),
-#          다른 자산의 상태에 영향을 받지 않는다. 종목 수가 늘어도 규칙은 동일하다.
-#   숫자를 넣으면(예: 1.00) 합계 초과분을 전 자산 비례 축소한다.
-MAX_GROSS: Optional[float] = None
-
-# 히스테리시스 워밍업을 위한 데이터 기간 (200일 MA + 충분한 상태 수렴 구간)
-HISTORY_PERIOD = "3y"
-
-# 리밸런싱 판정 임계치 (비중 차이가 이보다 작으면 '유지'로 간주)
-REBAL_EPS = 0.001
-
-KST = pytz.timezone("Asia/Seoul")
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-TELEGRAM_TO = os.environ.get("TELEGRAM_TO")
-
-MIN_OBS = max(MA_WINDOWS) + 20  # 이보다 관측치가 적은 자산은 '데이터 부족'으로 제외
+LOOKBACK = "max"        # 히스테리시스 상태 수렴을 위해 전체 히스토리 사용
+WARMUP_EXTRA = 250      # 최소 요구 길이 = max(MA) + 이 값. 신규 상장 종목은 제외됨
+RETRIES = 4
+STALE_DAYS = 5          # 최신 데이터가 이보다 오래되면 경고
+TG_MAX_LEN = 3800
+KST = timezone(timedelta(hours=9))
+# =======================================================================
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 2. 데이터 수집
-# ──────────────────────────────────────────────────────────────────────────────
+def esc(s) -> str:
+    """텔레그램 HTML 파싱 오류 방지."""
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-def download_prices(
-    tickers: Sequence[str],
-    period: str = HISTORY_PERIOD,
-    retries: int = 3,
-    pause: float = 5.0,
-) -> pd.DataFrame:
-    """수정종가 시계열을 내려받는다. 실패 시 지수 백오프로 재시도."""
-    last_err: Optional[Exception] = None
 
-    for attempt in range(1, retries + 1):
+def fmt(v: float) -> str:
+    return f"{v:,.0f}" if abs(v) >= 1000 else f"{v:,.2f}"
+
+
+def pct(w: float) -> str:
+    """20% / 15% / 10% 는 정수, 환산 비중처럼 소수가 나오면 소수 1자리."""
+    return f"{w:.0%}" if abs(w * 100 - round(w * 100)) < 1e-9 else f"{w:.1%}"
+
+
+# ---------- 데이터 수집 -------------------------------------------------
+def fetch_prices():
+    """{ticker: Series} 반환. 실패 시 재시도."""
+    tickers = list(TICKERS)
+    last_err = None
+
+    for attempt in range(1, RETRIES + 1):
         try:
-            raw = yf.download(
-                list(tickers),
-                period=period,
-                interval="1d",
-                auto_adjust=True,     # 'Close' 가 곧 수정종가
-                progress=False,
-                threads=False,
+            df = yf.download(
+                tickers, period=LOOKBACK, interval="1d",
+                auto_adjust=True, progress=False, threads=False,
+                group_by="column",
             )
-            if raw is None or raw.empty:
-                raise ValueError("yfinance 가 빈 데이터를 반환했습니다.")
+            if df is not None and not df.empty:
+                close = df["Close"]
+                out = {}
+                if isinstance(close, pd.Series):
+                    out[tickers[0]] = close.dropna()
+                else:
+                    for t in tickers:
+                        if t in close.columns:
+                            out[t] = close[t].dropna()
+                return out, None
+            last_err = "빈 응답"
+        except Exception as e:                          # noqa: BLE001
+            last_err = str(e)
 
-            if isinstance(raw.columns, pd.MultiIndex):
-                close = raw["Close"].copy()
-            else:  # 단일 티커
-                close = raw[["Close"]].copy()
-                close.columns = [tickers[0]]
+        if attempt < RETRIES:
+            wait = 4 * attempt
+            print(f"  수신 실패({last_err}) — {wait}초 후 재시도 "
+                  f"{attempt}/{RETRIES - 1}", file=sys.stderr)
+            time.sleep(wait)
 
-            close = close.reindex(columns=list(tickers))
-            close.index = pd.to_datetime(close.index)
-            close = close.sort_index().ffill()
-            return close
-
-        except Exception as exc:  # noqa: BLE001
-            last_err = exc
-            print(f"[WARN] 다운로드 실패 ({attempt}/{retries}): {exc}", file=sys.stderr)
-            if attempt < retries:
-                time.sleep(pause * attempt)
-
-    raise RuntimeError(f"가격 데이터 다운로드에 최종 실패했습니다: {last_err}")
+    return {}, last_err
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 3. 시그널 계산
-# ──────────────────────────────────────────────────────────────────────────────
+# ---------- 상태 머신 ---------------------------------------------------
+def compute_states(close: pd.Series):
+    """(정보 dict, 오류메시지) 반환.
 
-def hysteresis_state(
-    price: pd.Series,
-    ma: pd.Series,
-    upper_mult: float = UPPER_BAND_MULT,
-    lower_mult: float = LOWER_BAND_MULT,
-) -> pd.Series:
-    """단일 (자산 x 이동평균) 조합의 히스테리시스 ON/OFF 상태 시계열.
-
-    OFF 상태에서는 상단 밴드를 '초과'해야 ON,
-    ON  상태에서는 하단 밴드 '이상'이면 ON 유지.
-    데이터가 없는 구간은 NaN 이며 상태는 OFF 로 리셋된다.
+    백테스트와 동일한 규칙:
+        price > ma * BAND_UP  -> ON
+        price < ma * BAND_DN  -> OFF
+        그 외                 -> 유지
     """
-    p = price.to_numpy(dtype=float)
-    m = ma.to_numpy(dtype=float)
-    upper = m * upper_mult
-    lower = m * lower_mult
+    need = max(MA_PERIODS) + WARMUP_EXTRA     # 히스테리시스 워밍업 여유
+    if len(close) < need:
+        return None, f"데이터 부족 ({len(close)}일 / 최소 {need}일)"
 
-    out = np.full(len(p), np.nan)
-    prev = 0.0
-    for i in range(len(p)):
-        if np.isnan(p[i]) or np.isnan(m[i]):
-            prev = 0.0
+    mas = {n: close.rolling(n).mean() for n in MA_PERIODS}
+    state = {n: 0 for n in MA_PERIODS}
+    prev_snapshot = None
+
+    for i in range(max(MA_PERIODS) - 1, len(close)):
+        price = float(close.iloc[i])
+
+        nxt = {}
+        for n in MA_PERIODS:
+            ma = mas[n].iloc[i]
+            if pd.isna(ma):
+                nxt[n] = 0
+                continue
+            ma = float(ma)
+            s = state[n]
+            if price > ma * BAND_UP:
+                s = 1
+            elif price < ma * BAND_DN:
+                s = 0
+            nxt[n] = s
+
+        if i == len(close) - 1:
+            prev_snapshot = dict(state)     # 마지막 봉 직전 상태
+        state = nxt
+
+    if prev_snapshot is None:
+        return None, "상태 계산 실패"
+
+    last = float(close.iloc[-1])
+    before = float(close.iloc[-2])
+    return {
+        "today": dict(state),
+        "yesterday": prev_snapshot,
+        "ma": {n: float(mas[n].iloc[-1]) for n in MA_PERIODS},
+        "price": last,
+        "pct": (last / before - 1) * 100 if before else 0.0,
+        "date": close.index[-1],
+    }, None
+
+
+# ---------- 리포트 ------------------------------------------------------
+def build_report():
+    prices, fetch_err = fetch_prices()
+
+    now = datetime.now(KST).strftime("%Y-%m-%d")
+    capital = os.environ.get("PORTFOLIO_VALUE", "").strip()
+    capital = float(capital) if capital else None
+
+    rows, changes, failed, warns = [], [], [], []
+    base_date = None
+    t_total = y_total = 0.0
+    live = {}                       # 환산 비중 표시용 {name: weight}
+
+    if fetch_err:
+        warns.append(f"수신 경고: {fetch_err}")
+
+    for ticker, name in TICKERS.items():
+        close = prices.get(ticker)
+        if close is None or close.empty:
+            failed.append(f"{name} ({ticker}) — 데이터 없음")
             continue
-        if prev == 1.0:
-            prev = 1.0 if p[i] >= lower[i] else 0.0
-        else:
-            prev = 1.0 if p[i] > upper[i] else 0.0
-        out[i] = prev
 
-    return pd.Series(out, index=price.index)
-
-
-def compute_states(close: pd.DataFrame) -> Dict[str, pd.DataFrame]:
-    """자산별 {날짜 x 이동평균} 상태 테이블을 만든다."""
-    states: Dict[str, pd.DataFrame] = {}
-    for asset in ASSETS:
-        px = close[asset.ticker]
-        cols = {}
-        for w in MA_WINDOWS:
-            ma = px.rolling(window=w, min_periods=w).mean()
-            cols[w] = hysteresis_state(px, ma)
-        states[asset.name] = pd.DataFrame(cols, index=close.index)
-    return states
-
-
-def scores_at(states: Dict[str, pd.DataFrame], pos: int) -> Dict[str, Optional[int]]:
-    """pos 번째 행(음수 인덱스 허용)의 자산별 점수. 데이터 부족이면 None."""
-    out: Dict[str, Optional[int]] = {}
-    for name, df in states.items():
-        row = df.iloc[pos]
-        out[name] = None if row.isna().any() else int(row.sum())
-    return out
-
-
-def scores_to_weights(scores: Dict[str, Optional[int]]) -> Dict[str, float]:
-    """점수 -> 목표 비중 (자산별 최대 BASE_WEIGHT).
-
-    MAX_GROSS 가 None 이면 자산 간 상호작용 없이 각자의 점수만으로 비중이 정해진다.
-    값이 주어진 경우에만 합계 초과분을 비례 축소한다.
-    """
-    raw = {
-        name: (0.0 if s is None else BASE_WEIGHT * SCALAR_MAP[s])
-        for name, s in scores.items()
-    }
-    if MAX_GROSS is None:
-        return raw
-
-    gross = sum(raw.values())
-    if gross > MAX_GROSS + 1e-9:
-        factor = MAX_GROSS / gross
-        raw = {k: v * factor for k, v in raw.items()}
-    return raw
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 4. 리포트 생성
-# ──────────────────────────────────────────────────────────────────────────────
-
-def _pad(text: str, width: int) -> str:
-    """한글(전각)을 2칸으로 계산해 폭을 맞춘다."""
-    w = sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
-    return text + " " * max(0, width - w)
-
-
-def _fmt_date(ts: pd.Timestamp) -> str:
-    ts = pd.Timestamp(ts)
-    ts = ts.tz_localize(KST) if ts.tzinfo is None else ts.tz_convert(KST)
-    return ts.strftime("%Y-%m-%d (%a)")
-
-
-def build_report(
-    close: pd.DataFrame,
-    states: Dict[str, pd.DataFrame],
-) -> str:
-    today_scores = scores_at(states, -1)
-    prev_scores = scores_at(states, -2)
-    today_w = scores_to_weights(today_scores)
-    prev_w = scores_to_weights(prev_scores)
-
-    t_gross = sum(today_w.values())
-    y_gross = sum(prev_w.values())
-    t_cash, y_cash = 1.0 - t_gross, 1.0 - y_gross
-
-    changed = [
-        a.name for a in ASSETS
-        if abs(today_w[a.name] - prev_w[a.name]) >= REBAL_EPS
-    ]
-
-    prices = close.iloc[-1]
-    chg = close.pct_change().iloc[-1]
-    stale = [a.name for a in ASSETS if today_scores[a.name] is None]
-
-    L: List[str] = []
-    L.append("[ TAA Satellite - 8 Asset ]")
-    L.append(f"기준일: {_fmt_date(close.index[-1])} 종가")
-    L.append("집행: 다음 거래일 (lag=1)")
-    L.append(f"밴드: +{(UPPER_BAND_MULT-1)*100:.1f}% / -{(1-LOWER_BAND_MULT)*100:.1f}%"
-             f"  |  배분: 20/15/10/0%")
-
-    L.append("")
-    if changed:
-        L.append(f"[!] 리밸런싱 필요 - 변경 자산 {len(changed)}개: {', '.join(changed)}")
-    else:
-        L.append("[-] 리밸런싱 불필요 (전일과 동일)")
-    if stale:
-        L.append(f"[!] 데이터 부족으로 제외된 자산: {', '.join(stale)}")
-
-    # [1] 목표 비중
-    L.append("")
-    L.append("-" * 28)
-    L.append("[1] 오늘 목표 비중")
-    for a in ASSETS:
-        mark = "> " if a.name in changed else "  "
-        L.append(f"{mark}{_pad(a.name, 12)}{today_w[a.name]:>6.1%}")
-    cash_mark = "> " if abs(t_cash - y_cash) >= REBAL_EPS else "  "
-    L.append(f"{cash_mark}{_pad('현금', 12)}{max(t_cash, 0.0):>6.1%}")
-
-    if MAX_GROSS is None:
-        L.append(f"  (위험자산 합계 {t_gross:.1%} / 자산별 상한 {BASE_WEIGHT:.0%})")
-        if t_gross > 1.0 + 1e-9:
-            L.append(f"  [!] 합계가 100%를 {t_gross - 1.0:.1%}p 초과합니다.")
-            L.append("      100% 기준 환산 비중:")
-            for a in ASSETS:
-                if today_w[a.name] > 0:
-                    L.append(f"        {_pad(a.name, 12)}{today_w[a.name] / t_gross:>6.1%}")
-    else:
-        L.append(f"  (위험자산 합계 {t_gross:.1%} / 상한 {MAX_GROSS:.0%})")
-        if t_gross >= MAX_GROSS - 1e-9:
-            L.append("  * 상한 도달: 개별 비중이 비례 축소되었습니다.")
-
-    # [2] 변경 상세
-    L.append("")
-    L.append("-" * 28)
-    L.append("[2] 비중 변경 상세")
-    rows = [(a.name, prev_w[a.name], today_w[a.name]) for a in ASSETS]
-    rows.append(("현금", max(y_cash, 0.0), max(t_cash, 0.0)))
-    for name, yw, tw in rows:
-        diff = tw - yw
-        tag = "(유지)" if abs(diff) < REBAL_EPS else f"({diff:+.1%}p)"
-        L.append(f"- {_pad(name, 12)}: {yw:>6.1%} -> {tw:>6.1%} {tag}")
-
-    # [3] 시장 현황
-    L.append("")
-    L.append("-" * 28)
-    L.append("[3] 종가 / 전일 대비")
-    for a in ASSETS:
-        px, c = prices[a.ticker], chg[a.ticker]
-        if pd.isna(px):
-            L.append(f"- {a.name}: 데이터 없음")
-        else:
-            L.append(f"- {a.name}: {px:,.0f} ({c:+.1%})" if pd.notna(c)
-                     else f"- {a.name}: {px:,.0f}")
-
-    # [4] MA 신호 상세
-    L.append("")
-    L.append("-" * 28)
-    L.append("[4] MA 신호 상세 (이격도 = 종가/MA - 1)")
-    for a in ASSETS:
-        s = today_scores[a.name]
-        if s is None:
-            L.append(f"\n* {a.name} (데이터 부족)")
+        info, err = compute_states(close)
+        if info is None:
+            failed.append(f"{name} ({ticker}) — {err}")
             continue
-        L.append(f"\n* {a.name} ({s}/3) -> {today_w[a.name]:.1%}")
-        px = close[a.ticker]
-        for w in MA_WINDOWS:
-            ma = px.rolling(window=w, min_periods=w).mean().iloc[-1]
-            state = states[a.name][w].iloc[-1]
-            disp = px.iloc[-1] / ma - 1.0
-            L.append(f"  - {str(w).rjust(3)}일: {'ON ' if state == 1.0 else 'OFF'} ({disp:+.1%})")
 
-    return "\n".join(L)
+        if base_date is None:
+            base_date = info["date"]
+            stale = (pd.Timestamp.now(tz="UTC").tz_localize(None)
+                     - pd.Timestamp(base_date).tz_localize(None)).days
+            if stale > STALE_DAYS:
+                warns.append(f"데이터가 낡음 — 최종 {base_date.date()} ({stale}일 전)")
+
+        t_on = sum(info["today"].values())
+        y_on = sum(info["yesterday"].values())
+        t_w = BASE_WEIGHTS[ticker] * SCALAR_MAP[t_on]
+        y_w = BASE_WEIGHTS[ticker] * SCALAR_MAP[y_on]
+        t_total += t_w
+        y_total += y_w
+        if t_w > 0:
+            live[name] = t_w
+
+        if abs(t_w - y_w) > 1e-9:
+            flips = []
+            for n in MA_PERIODS:
+                if info["today"][n] > info["yesterday"][n]:
+                    flips.append(f"{n}일↑")
+                elif info["today"][n] < info["yesterday"][n]:
+                    flips.append(f"{n}일↓")
+            mark = "🔴" if t_w > y_w else "🔵"
+            changes.append(
+                f"{mark} <b>{esc(name)}</b>  {pct(y_w)} → <b>{pct(t_w)}</b>"
+                f"  ({', '.join(flips)})"
+            )
+
+        dots = "".join("●" if info["today"][n] else "○" for n in MA_PERIODS)
+        arrow = "▲" if info["pct"] > 0 else ("▼" if info["pct"] < 0 else "―")
+
+        line = (f"{dots} <b>{pct(t_w)}</b>  {esc(name)}"
+                f"  <code>{esc(ticker)}</code>\n"
+                f"     ₩{fmt(info['price'])} {arrow}{abs(info['pct']):.1f}%")
+        if capital:
+            qty = capital * t_w / info["price"]
+            line += f"  ·  {qty:,.0f}주"
+        line += "\n     " + "  ".join(
+            f"{n}일 {info['price'] / info['ma'][n] - 1:+.1%}" for n in MA_PERIODS
+        )
+        rows.append(line)
+
+    t_cash, y_cash = 1.0 - t_total, 1.0 - y_total
+    if rows and abs(t_cash - y_cash) > 1e-9:
+        mark = "🔵" if t_cash > y_cash else "🔴"
+        changes.append(
+            f"{mark} <b>현금</b>  {pct(max(y_cash, 0))} → <b>{pct(max(t_cash, 0))}</b>"
+        )
+
+    lines = ["<b>🛰 TAA Satellite — 국내 8자산</b>", f"<i>{now} KST</i>"]
+    if base_date is not None:
+        lines.append(f"<i>기준: {base_date.strftime('%Y-%m-%d')} 마감 · 익일 집행</i>")
+    lines.append("")
+
+    if changes:
+        lines.append(f"<b>■ 리밸런싱 필요 — {len(changes)}건</b>")
+        lines += changes
+    else:
+        lines.append("<b>■ 리밸런싱 불필요</b>")
+    lines.append("")
+
+    lines.append("<b>■ 목표 비중</b>")
+    lines.append("<i>● = 20/120/200일선 ON · 자산별 상한 20%</i>")
+    lines += rows
+
+    if rows:
+        cash_line = f"　　 <b>{pct(max(t_cash, 0))}</b>  현금"
+        if capital and t_cash > 0:
+            cash_line += f"  ·  ₩{fmt(capital * t_cash)}"
+        lines.append(cash_line)
+        lines.append(f"　　 <i>위험자산 합계 {pct(t_total)}</i>")
+
+    if t_total > 1.0 + 1e-9:
+        lines += ["", f"<b>⚠️ 합계가 100%를 {pct(t_total - 1.0)}p 초과</b>",
+                  "<i>100% 기준 환산 비중</i>"]
+        for name, w in live.items():
+            scaled = w / t_total
+            entry = f"· {esc(name)}  <b>{scaled:.1%}</b>"
+            if capital:
+                entry += f"  ·  ₩{fmt(capital * scaled)}"
+            lines.append(entry)
+
+    if failed:
+        lines += ["", "<b>⚠️ 처리 실패</b>"] + [f"· {esc(f)}" for f in failed]
+    if warns:
+        lines += ["", "<b>⚠️ 경고</b>"] + [f"· {esc(w)}" for w in warns]
+
+    return "\n".join(lines), len(changes), len(rows)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 5. 텔레그램 전송
-# ──────────────────────────────────────────────────────────────────────────────
-
-def chunk_text(text: str, limit: int = 3800) -> List[str]:
-    """텔레그램 4096자 제한을 피해 줄 단위로 분할."""
-    chunks, buf = [], ""
-    for line in text.split("\n"):
-        if len(buf) + len(line) + 1 > limit:
-            chunks.append(buf)
-            buf = line
-        else:
-            buf = f"{buf}\n{line}" if buf else line
-    if buf:
-        chunks.append(buf)
-    return chunks
-
-
-def send_telegram(token: Optional[str], chat_id: Optional[str], text: str,
-                  retries: int = 3) -> bool:
-    """parse_mode 없이 순수 텍스트로 전송 (마크다운 파싱 400 에러 방지)."""
+# ---------- 텔레그램 ----------------------------------------------------
+def send_telegram(text: str) -> bool:
+    token = (os.environ.get("TELEGRAM_BOT_TOKEN")
+             or os.environ.get("TELEGRAM_TOKEN", "")).strip()
+    chat_id = (os.environ.get("TELEGRAM_CHAT_ID")
+               or os.environ.get("TELEGRAM_TO", "")).strip()
     if not token or not chat_id:
-        print("[WARN] TELEGRAM_TOKEN / TELEGRAM_TO 미설정 - 전송을 건너뜁니다.",
+        print("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 미설정 — 전송 생략.",
               file=sys.stderr)
         return False
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
+
+    chunks, buf = [], ""
+    for line in text.split("\n"):
+        if len(buf) + len(line) + 1 > TG_MAX_LEN:
+            chunks.append(buf)
+            buf = ""
+        buf += line + "\n"
+    if buf.strip():
+        chunks.append(buf)
+
     ok = True
-    for chunk in chunk_text(text):
-        for attempt in range(1, retries + 1):
-            try:
-                r = requests.post(url, data={"chat_id": chat_id, "text": chunk},
-                                  timeout=20)
-                r.raise_for_status()
-                break
-            except Exception as exc:  # noqa: BLE001
-                print(f"[WARN] 텔레그램 전송 실패 ({attempt}/{retries}): {exc}",
+    for chunk in chunks:
+        try:
+            r = requests.post(
+                url,
+                json={"chat_id": chat_id, "text": chunk,
+                      "parse_mode": "HTML", "disable_web_page_preview": True},
+                timeout=20,
+            )
+            if r.status_code != 200:
+                print(f"텔레그램 전송 실패 {r.status_code}: {r.text}",
                       file=sys.stderr)
-                if attempt == retries:
-                    ok = False
-                else:
-                    time.sleep(3 * attempt)
+                ok = False
+        except Exception as e:                          # noqa: BLE001
+            print(f"텔레그램 전송 오류: {e}", file=sys.stderr)
+            ok = False
+        time.sleep(0.5)
     return ok
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 6. 엔트리 포인트
-# ──────────────────────────────────────────────────────────────────────────────
+# ---------- 진입점 ------------------------------------------------------
+def main():
+    report, n_changes, n_ok = build_report()
 
-def main() -> int:
-    tickers = [a.ticker for a in ASSETS]
-    print("... 시장 데이터 다운로드 중 ...")
-    close = download_prices(tickers)
+    plain = report
+    for tag in ("<b>", "</b>", "<i>", "</i>", "<code>", "</code>"):
+        plain = plain.replace(tag, "")
+    print(plain.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">"))
 
-    usable = [a.name for a in ASSETS if close[a.ticker].notna().sum() >= MIN_OBS]
-    if not usable:
-        raise RuntimeError("사용 가능한 자산이 없습니다. 티커/데이터를 확인하세요.")
+    if n_ok == 0:
+        print("\n전 종목 처리 실패.", file=sys.stderr)
+        send_telegram(report)
+        sys.exit(1)
 
-    states = compute_states(close)
-    report = build_report(close, states)
+    always = os.environ.get("ALWAYS_SEND", "true").lower() != "false"
+    if n_changes == 0 and not always:
+        print("\n변동이 없어 전송하지 않았습니다 (ALWAYS_SEND=false).")
+        return
 
-    print(report)
-    send_telegram(TELEGRAM_TOKEN, TELEGRAM_TO, report)
-    return 0
+    if not send_telegram(report):
+        sys.exit(1)
+    print("\n텔레그램 전송 완료.")
 
 
 if __name__ == "__main__":
-    try:
-        sys.exit(main())
-    except Exception as exc:  # noqa: BLE001
-        print(f"[ERROR] {exc}", file=sys.stderr)
-        send_telegram(TELEGRAM_TOKEN, TELEGRAM_TO,
-                      f"[ TAA Satellite ] 실행 실패\n{exc}")
-        sys.exit(1)
+    main()
