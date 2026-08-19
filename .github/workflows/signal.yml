@@ -2,8 +2,9 @@ name: TAA Satellite Signal
 
 on:
   schedule:
-    # 09:00 UTC = 18:00 KST, 평일만 (KRX 종가 15:30 KST 반영 후 충분한 여유)
-    - cron: "0 9 * * 1-5"
+    # UTC 23:00 = 한국시간(KST) 다음날 08:00
+    # 일~목 UTC 실행 → 한국 기준 월~금 아침 8시
+    - cron: '15 20 * * 0-5'
   workflow_dispatch:
 
 permissions:
