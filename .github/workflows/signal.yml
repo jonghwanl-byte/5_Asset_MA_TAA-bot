@@ -33,6 +33,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           python -c "import yfinance, pandas; print('yfinance', yfinance.__version__, '| pandas', pandas.__version__)"
+          python -c "import pykrx; print('pykrx OK')"
 
       - name: Run signal bot
         env:
@@ -42,5 +43,7 @@ jobs:
           PORTFOLIO_VALUE: ${{ vars.PORTFOLIO_VALUE }}
           # 선택: "false" 로 두면 비중 변동이 있을 때만 전송
           ALWAYS_SEND: ${{ vars.ALWAYS_SEND }}
+          # 선택: 소스 우선순위 재정의 (기본 pykrx,history,download)
+          PRICE_SOURCE: ${{ vars.PRICE_SOURCE }}
           TZ: Asia/Seoul
         run: python satellite_signal.py
