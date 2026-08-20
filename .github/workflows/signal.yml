@@ -2,9 +2,8 @@ name: TAA Satellite Signal
 
 on:
   schedule:
-    # UTC 23:00 = 한국시간(KST) 다음날 08:00
-    # 일~목 UTC 실행 → 한국 기준 월~금 아침 8시
-    - cron: '15 20 * * 0-5'
+    # 21:00 UTC = 익일 06:00 KST, 평일 아침 (전 거래일 종가 기준 신호)
+    - cron: "0 21 * * 0-4"
   workflow_dispatch:
 
 permissions:
@@ -33,6 +32,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          python -c "import yfinance, pandas; print('yfinance', yfinance.__version__, '| pandas', pandas.__version__)"
 
       - name: Run signal bot
         env:
