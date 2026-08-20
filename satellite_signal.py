@@ -69,10 +69,14 @@ SCALAR_MAP = {3: 1.00, 2: 0.75, 1: 0.50, 0: 0.00}
 LOOKBACK = "max"        # 히스테리시스 상태 수렴을 위해 전체 히스토리 사용
 DEFAULT_START = "2005-01-01"   # period="max" 가 무시될 때 쓰는 명시적 시작일
 KRX_START = "20050101"         # pykrx 조회 시작일
+
 # 가격 소스 우선순위. 국내 상장 종목은 KRX 원본(pykrx)이 1순위.
 # PRICE_SOURCE=history,download 처럼 환경변수로 덮어쓸 수 있다.
-SOURCES = [s.strip() for s in os.environ.get(
-    "PRICE_SOURCE", "pykrx,history,download").split(",") if s.strip()]
+#
+# 주의: os.environ.get(key, default) 는 키가 '빈 문자열'로 존재하면 default 를
+# 쓰지 않는다. GitHub Actions 에서 미설정 vars 는 빈 문자열로 주입되므로
+# 반드시 `or` 로 한 번 더 걸러야 한다.
+DEFAULT_SOURCES = "pykrx,history,download"
 WARMUP_EXTRA = 250      # 최소 요구 길이 = max(MA) + 이 값. 신규 상장 종목은 제외됨
 RETRIES = 4
 FETCH_GAP = 0.7         # 종목 간 요청 간격(초). Yahoo 레이트리밋 회피
@@ -80,6 +84,15 @@ STALE_DAYS = 5          # 최신 데이터가 이보다 오래되면 경고
 TG_MAX_LEN = 3800
 KST = timezone(timedelta(hours=9))
 # =======================================================================
+
+
+def env(key: str, default: str = "") -> str:
+    """빈 문자열로 주입된 환경변수도 미설정으로 취급한다.
+
+    GitHub Actions 는 정의되지 않은 vars.* 를 빈 문자열로 넘기므로
+    os.environ.get(key, default) 만으로는 기본값이 적용되지 않는다.
+    """
+    return (os.environ.get(key) or default).strip()
 
 
 def esc(s) -> str:
@@ -176,6 +189,26 @@ SOURCE_FNS = {
     "history": _via_history,
     "download": _via_download,
 }
+
+
+def resolve_sources() -> list:
+    """PRICE_SOURCE 파싱. 비었거나 전부 잘못된 값이면 기본 순서로 되돌린다."""
+    raw = env("PRICE_SOURCE", DEFAULT_SOURCES)
+    names = [s.strip().lower() for s in raw.split(",") if s.strip()]
+
+    unknown = [n for n in names if n not in SOURCE_FNS]
+    if unknown:
+        print(f"[WARN] 알 수 없는 PRICE_SOURCE 항목 무시: {unknown}", file=sys.stderr)
+    names = [n for n in names if n in SOURCE_FNS]
+
+    if not names:
+        print(f"[WARN] PRICE_SOURCE 가 비어 기본값 사용: {DEFAULT_SOURCES}",
+              file=sys.stderr)
+        names = DEFAULT_SOURCES.split(",")
+    return names
+
+
+SOURCES = resolve_sources()
 
 
 def fetch_one(ticker: str):
@@ -304,8 +337,12 @@ def build_report():
     prices, fetch_errs = fetch_prices()
 
     now = datetime.now(KST).strftime("%Y-%m-%d")
-    capital = os.environ.get("PORTFOLIO_VALUE", "").strip()
-    capital = float(capital) if capital else None
+    raw_cap = env("PORTFOLIO_VALUE")
+    try:
+        capital = float(raw_cap.replace(",", "")) if raw_cap else None
+    except ValueError:
+        print(f"[WARN] PORTFOLIO_VALUE 파싱 실패: {raw_cap!r} — 무시", file=sys.stderr)
+        capital = None
 
     rows, changes, failed, warns = [], [], [], []
     base_date = None
@@ -416,10 +453,8 @@ def build_report():
 
 # ---------- 텔레그램 ----------------------------------------------------
 def send_telegram(text: str) -> bool:
-    token = (os.environ.get("TELEGRAM_BOT_TOKEN")
-             or os.environ.get("TELEGRAM_TOKEN", "")).strip()
-    chat_id = (os.environ.get("TELEGRAM_CHAT_ID")
-               or os.environ.get("TELEGRAM_TO", "")).strip()
+    token = env("TELEGRAM_BOT_TOKEN") or env("TELEGRAM_TOKEN")
+    chat_id = env("TELEGRAM_CHAT_ID") or env("TELEGRAM_TO")
     if not token or not chat_id:
         print("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 미설정 — 전송 생략.",
               file=sys.stderr)
@@ -470,7 +505,7 @@ def main():
         send_telegram(report)
         sys.exit(1)
 
-    always = os.environ.get("ALWAYS_SEND", "true").lower() != "false"
+    always = env("ALWAYS_SEND", "true").lower() != "false"
     if n_changes == 0 and not always:
         print("\n변동이 없어 전송하지 않았습니다 (ALWAYS_SEND=false).")
         return

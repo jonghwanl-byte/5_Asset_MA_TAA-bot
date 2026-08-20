@@ -220,6 +220,15 @@ yfinance 0.2.65 | 소스 순서 ['pykrx', 'history', 'download'] | 8종목
 `PRICE_SOURCE` 변수로 순서를 바꾸거나 특정 소스만 쓸 수 있습니다
 (예: `PRICE_SOURCE=pykrx`).
 
+### 소스 순서가 `[]` 로 찍히고 전 종목 "빈 응답"
+
+GitHub Actions 는 정의되지 않은 `vars.*` 를 **빈 문자열**로 주입합니다.
+`os.environ.get("PRICE_SOURCE", 기본값)` 은 키가 빈 값으로 존재하면 기본값을 쓰지 않아
+소스 목록이 비어버립니다. 현재는 `env()` 헬퍼로 빈 문자열도 미설정으로 취급하고,
+파싱 결과가 비면 기본 순서로 되돌립니다. `PORTFOLIO_VALUE`, `ALWAYS_SEND` 도 동일 처리입니다.
+
+Variables 를 아예 등록하지 않아도 정상 동작하므로, 필요할 때만 추가하세요.
+
 ### pykrx 가 막히는 경우
 
 KRX가 GitHub Actions IP를 일시 차단하면 `pykrx` 가 빈 응답을 줍니다.
