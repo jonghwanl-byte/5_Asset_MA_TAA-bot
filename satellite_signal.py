@@ -67,8 +67,10 @@ BAND_DN = 0.975         # 매도(OFF) 문턱 MA -2.5%
 SCALAR_MAP = {3: 1.00, 2: 0.75, 1: 0.50, 0: 0.00}
 
 LOOKBACK = "max"        # 히스테리시스 상태 수렴을 위해 전체 히스토리 사용
+DEFAULT_START = "2005-01-01"   # period="max" 가 무시될 때 쓰는 명시적 시작일
 WARMUP_EXTRA = 250      # 최소 요구 길이 = max(MA) + 이 값. 신규 상장 종목은 제외됨
 RETRIES = 4
+FETCH_GAP = 0.7         # 종목 간 요청 간격(초). Yahoo 레이트리밋 회피
 STALE_DAYS = 5          # 최신 데이터가 이보다 오래되면 경고
 TG_MAX_LEN = 3800
 KST = timezone(timedelta(hours=9))
@@ -90,39 +92,107 @@ def pct(w: float) -> str:
 
 
 # ---------- 데이터 수집 -------------------------------------------------
+def _naive(ts):
+    """tz 유무와 무관하게 tz-naive Timestamp 로 통일."""
+    ts = pd.Timestamp(ts)
+    return ts.tz_convert(None) if ts.tzinfo is not None else ts
+
+
+def _clean(s) -> pd.Series | None:
+    """Close 시리즈 정규화. 비어 있으면 None."""
+    if s is None or len(s) == 0:
+        return None
+    if isinstance(s, pd.DataFrame):
+        s = s.iloc[:, 0]
+    s = pd.to_numeric(s, errors="coerce").dropna()
+    if len(s) == 0:
+        return None
+    if getattr(s.index, "tz", None) is not None:
+        s.index = s.index.tz_localize(None)
+    return s.sort_index()
+
+
+def _via_history(ticker: str):
+    """yf.Ticker().history() 경로."""
+    df = yf.Ticker(ticker).history(
+        period=LOOKBACK, interval="1d", auto_adjust=True,
+    )
+    return _clean(df["Close"]) if df is not None and "Close" in df else None
+
+
+def _via_download(ticker: str):
+    """명시적 start 를 준 yf.download() 경로.
+
+    period="max" 가 무시되고 기본값(1mo)으로 떨어지는 사례가 있어,
+    기간을 날짜로 직접 지정한다.
+    """
+    df = yf.download(
+        ticker, start=DEFAULT_START, interval="1d",
+        auto_adjust=True, progress=False, threads=False,
+    )
+    if df is None or len(df) == 0:
+        return None
+    if isinstance(df.columns, pd.MultiIndex):
+        if "Close" not in df.columns.get_level_values(0):
+            return None
+        return _clean(df["Close"])
+    return _clean(df["Close"]) if "Close" in df.columns else None
+
+
+def fetch_one(ticker: str):
+    """(Series, 오류메시지) 반환.
+
+    두 경로를 순서대로 시도하고 더 긴 히스토리를 채택한다. 한 종목의
+    실패가 다른 종목을 오염시키지 않도록 반드시 종목별로 요청한다.
+    (여러 종목을 한 번에 받으면 하나가 실패할 때 병합 프레임 전체가
+     짧게 잘려 나오는 경우가 있다.)
+    """
+    need = max(MA_PERIODS) + WARMUP_EXTRA
+    best, last_err = None, None
+
+    for label, fn in (("history", _via_history), ("download", _via_download)):
+        for attempt in range(1, RETRIES + 1):
+            try:
+                s = fn(ticker)
+                if s is not None and (best is None or len(s) > len(best)):
+                    best = s
+                break
+            except Exception as e:                      # noqa: BLE001
+                last_err = f"{label}: {e}"
+                msg = str(e).lower()
+                if any(k in msg for k in ("no data", "not found", "delisted",
+                                          "invalid", "no price data")):
+                    break                               # 종목 자체 문제 — 재시도 무의미
+                if attempt < RETRIES:
+                    wait = 3 * attempt
+                    print(f"  {ticker} {label} 실패({e}) — {wait}초 후 재시도 "
+                          f"{attempt}/{RETRIES - 1}", file=sys.stderr)
+                    time.sleep(wait)
+
+        if best is not None and len(best) >= need:
+            break                                       # 충분하면 다음 경로 생략
+
+    if best is None:
+        return None, (last_err or "빈 응답")
+    return best, last_err
+
+
 def fetch_prices():
-    """{ticker: Series} 반환. 실패 시 재시도."""
-    tickers = list(TICKERS)
-    last_err = None
+    """{ticker: Series}, {ticker: 오류메시지} 반환."""
+    out, errs = {}, {}
+    print(f"yfinance {getattr(yf, '__version__', '?')} — {len(TICKERS)}종목 수신")
 
-    for attempt in range(1, RETRIES + 1):
-        try:
-            df = yf.download(
-                tickers, period=LOOKBACK, interval="1d",
-                auto_adjust=True, progress=False, threads=False,
-                group_by="column",
-            )
-            if df is not None and not df.empty:
-                close = df["Close"]
-                out = {}
-                if isinstance(close, pd.Series):
-                    out[tickers[0]] = close.dropna()
-                else:
-                    for t in tickers:
-                        if t in close.columns:
-                            out[t] = close[t].dropna()
-                return out, None
-            last_err = "빈 응답"
-        except Exception as e:                          # noqa: BLE001
-            last_err = str(e)
+    for ticker in TICKERS:
+        s, err = fetch_one(ticker)
+        if s is None:
+            errs[ticker] = err
+            print(f"  {ticker}: 실패 ({err})", file=sys.stderr)
+        else:
+            out[ticker] = s
+            print(f"  {ticker}: {len(s)}일, 최종 {s.index[-1].date()}")
+        time.sleep(FETCH_GAP)
 
-        if attempt < RETRIES:
-            wait = 4 * attempt
-            print(f"  수신 실패({last_err}) — {wait}초 후 재시도 "
-                  f"{attempt}/{RETRIES - 1}", file=sys.stderr)
-            time.sleep(wait)
-
-    return {}, last_err
+    return out, errs
 
 
 # ---------- 상태 머신 ---------------------------------------------------
@@ -180,7 +250,7 @@ def compute_states(close: pd.Series):
 
 # ---------- 리포트 ------------------------------------------------------
 def build_report():
-    prices, fetch_err = fetch_prices()
+    prices, fetch_errs = fetch_prices()
 
     now = datetime.now(KST).strftime("%Y-%m-%d")
     capital = os.environ.get("PORTFOLIO_VALUE", "").strip()
@@ -191,13 +261,10 @@ def build_report():
     t_total = y_total = 0.0
     live = {}                       # 환산 비중 표시용 {name: weight}
 
-    if fetch_err:
-        warns.append(f"수신 경고: {fetch_err}")
-
     for ticker, name in TICKERS.items():
         close = prices.get(ticker)
         if close is None or close.empty:
-            failed.append(f"{name} ({ticker}) — 데이터 없음")
+            failed.append(f"{name} ({ticker}) — {fetch_errs.get(ticker, '데이터 없음')}")
             continue
 
         info, err = compute_states(close)
@@ -206,9 +273,8 @@ def build_report():
             continue
 
         if base_date is None:
-            base_date = info["date"]
-            stale = (pd.Timestamp.now(tz="UTC").tz_localize(None)
-                     - pd.Timestamp(base_date).tz_localize(None)).days
+            base_date = _naive(info["date"])
+            stale = (_naive(pd.Timestamp.now(tz="UTC")) - base_date).days
             if stale > STALE_DAYS:
                 warns.append(f"데이터가 낡음 — 최종 {base_date.date()} ({stale}일 전)")
 
@@ -290,6 +356,7 @@ def build_report():
 
     if failed:
         lines += ["", "<b>⚠️ 처리 실패</b>"] + [f"· {esc(f)}" for f in failed]
+        lines.append(f"<i>yfinance {esc(getattr(yf, '__version__', '?'))}</i>")
     if warns:
         lines += ["", "<b>⚠️ 경고</b>"] + [f"· {esc(w)}" for w in warns]
 
