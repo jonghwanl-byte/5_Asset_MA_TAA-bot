@@ -52,7 +52,8 @@ TICKERS = {
     "453810.KS": "인도 주식",
     "385560.KS": "채권 30년",
     "148070.KS": "채권 10년",
-    "426030.KS": "타임 나스닥",
+    "426030.KS": "나스닥 주식",
+    "0019K0.KS": "나스닥 채권",
 }
 
 BASE_WEIGHT = 0.20                                   # 자산별 상한(=기본 비중)
@@ -67,6 +68,11 @@ SCALAR_MAP = {3: 1.00, 2: 0.75, 1: 0.50, 0: 0.00}
 
 LOOKBACK = "max"        # 히스테리시스 상태 수렴을 위해 전체 히스토리 사용
 DEFAULT_START = "2005-01-01"   # period="max" 가 무시될 때 쓰는 명시적 시작일
+KRX_START = "20050101"         # pykrx 조회 시작일
+# 가격 소스 우선순위. 국내 상장 종목은 KRX 원본(pykrx)이 1순위.
+# PRICE_SOURCE=history,download 처럼 환경변수로 덮어쓸 수 있다.
+SOURCES = [s.strip() for s in os.environ.get(
+    "PRICE_SOURCE", "pykrx,history,download").split(",") if s.strip()]
 WARMUP_EXTRA = 250      # 최소 요구 길이 = max(MA) + 이 값. 신규 상장 종목은 제외됨
 RETRIES = 4
 FETCH_GAP = 0.7         # 종목 간 요청 간격(초). Yahoo 레이트리밋 회피
@@ -111,6 +117,33 @@ def _clean(s) -> pd.Series | None:
     return s.sort_index()
 
 
+def _via_pykrx(ticker: str):
+    """KRX 원본 데이터 경로. 국내 상장 종목의 1순위 소스.
+
+    Yahoo 가 .KS 종목에 대해 잘린 히스토리(약 1개월)를 돌려주는 사례가 있어,
+    KRX 에서 직접 받는 경로를 먼저 시도한다.
+    """
+    from pykrx import stock                              # 지연 임포트
+
+    code = ticker.split(".")[0]
+    today = datetime.now(KST).strftime("%Y%m%d")
+
+    df = None
+    for getter in (stock.get_etf_ohlcv_by_date, stock.get_market_ohlcv_by_date):
+        try:
+            df = getter(KRX_START, today, code)
+        except Exception:                                # noqa: BLE001
+            df = None
+        if df is not None and len(df) and "종가" in df.columns:
+            break
+        df = None
+
+    if df is None:
+        return None
+    s = _clean(df["종가"])
+    return s[s > 0] if s is not None else None           # 휴장일 0 제거
+
+
 def _via_history(ticker: str):
     """yf.Ticker().history() 경로."""
     df = yf.Ticker(ticker).history(
@@ -138,33 +171,51 @@ def _via_download(ticker: str):
     return _clean(df["Close"]) if "Close" in df.columns else None
 
 
+SOURCE_FNS = {
+    "pykrx": _via_pykrx,
+    "history": _via_history,
+    "download": _via_download,
+}
+
+
 def fetch_one(ticker: str):
     """(Series, 오류메시지) 반환.
 
-    두 경로를 순서대로 시도하고 더 긴 히스토리를 채택한다. 한 종목의
-    실패가 다른 종목을 오염시키지 않도록 반드시 종목별로 요청한다.
-    (여러 종목을 한 번에 받으면 하나가 실패할 때 병합 프레임 전체가
-     짧게 잘려 나오는 경우가 있다.)
+    PRICE_SOURCE 순서대로 시도하고 가장 긴 히스토리를 채택한다. 충분한
+    길이를 확보하면 남은 경로는 건너뛴다. 한 종목의 실패가 다른 종목을
+    오염시키지 않도록 반드시 종목별로 요청한다.
     """
     need = max(MA_PERIODS) + WARMUP_EXTRA
-    best, last_err = None, None
+    best, best_src, errs = None, None, []
 
-    for label, fn in (("history", _via_history), ("download", _via_download)):
+    for label in SOURCES:
+        fn = SOURCE_FNS.get(label)
+        if fn is None:
+            continue
+
         for attempt in range(1, RETRIES + 1):
             try:
                 s = fn(ticker)
-                if s is not None and (best is None or len(s) > len(best)):
-                    best = s
+                if s is None or len(s) == 0:
+                    print(f"  {ticker} [{label}] 빈 응답")
+                else:
+                    print(f"  {ticker} [{label}] {len(s)}일"
+                          f"{'' if len(s) >= need else ' — 부족'}")
+                    if best is None or len(s) > len(best):
+                        best, best_src = s, label
+                break
+            except ImportError:
+                errs.append(f"{label}: 미설치")
                 break
             except Exception as e:                      # noqa: BLE001
-                last_err = f"{label}: {e}"
+                errs.append(f"{label}: {e}")
                 msg = str(e).lower()
                 if any(k in msg for k in ("no data", "not found", "delisted",
                                           "invalid", "no price data")):
                     break                               # 종목 자체 문제 — 재시도 무의미
                 if attempt < RETRIES:
                     wait = 3 * attempt
-                    print(f"  {ticker} {label} 실패({e}) — {wait}초 후 재시도 "
+                    print(f"  {ticker} [{label}] 실패({e}) — {wait}초 후 재시도 "
                           f"{attempt}/{RETRIES - 1}", file=sys.stderr)
                     time.sleep(wait)
 
@@ -172,23 +223,24 @@ def fetch_one(ticker: str):
             break                                       # 충분하면 다음 경로 생략
 
     if best is None:
-        return None, (last_err or "빈 응답")
-    return best, last_err
+        return None, None, ("; ".join(errs) if errs else "빈 응답")
+    return best, best_src, ("; ".join(errs) if errs else None)
 
 
 def fetch_prices():
     """{ticker: Series}, {ticker: 오류메시지} 반환."""
     out, errs = {}, {}
-    print(f"yfinance {getattr(yf, '__version__', '?')} — {len(TICKERS)}종목 수신")
+    print(f"yfinance {getattr(yf, '__version__', '?')} | 소스 순서 {SOURCES} "
+          f"| {len(TICKERS)}종목")
 
     for ticker in TICKERS:
-        s, err = fetch_one(ticker)
+        s, src, err = fetch_one(ticker)
         if s is None:
             errs[ticker] = err
-            print(f"  {ticker}: 실패 ({err})", file=sys.stderr)
+            print(f"  -> {ticker}: 실패 ({err})", file=sys.stderr)
         else:
             out[ticker] = s
-            print(f"  {ticker}: {len(s)}일, 최종 {s.index[-1].date()}")
+            print(f"  -> {ticker}: {src} 채택, {len(s)}일, 최종 {s.index[-1].date()}")
         time.sleep(FETCH_GAP)
 
     return out, errs

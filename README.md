@@ -123,6 +123,7 @@ python satellite_signal.py          # 환경변수 없으면 콘솔 출력만
 | `TELEGRAM_CHAT_ID` | O | 수신 chat_id (구 `TELEGRAM_TO` 도 인식) |
 | `PORTFOLIO_VALUE` | X | 평가액(KRW). 넣으면 목표 수량(주)까지 계산 |
 | `ALWAYS_SEND` | X | `false` 면 비중 변동이 있을 때만 전송. 기본 `true` |
+| `PRICE_SOURCE` | X | 가격 소스 우선순위. 기본 `pykrx,history,download` |
 
 ```bash
 export TELEGRAM_BOT_TOKEN="123456:ABC-..."
@@ -191,21 +192,39 @@ taa_satellite/
 
 ### 전 종목이 "데이터 부족 (21일 / 최소 450일)"
 
-여러 종목을 한 번에 받을 때 하나가 실패하면 병합 프레임 전체가 짧게 잘리거나,
-`period="max"` 가 무시되고 기본값(1개월 ≈ 21거래일)으로 떨어지는 경우가 있습니다.
-이를 막기 위해 **종목별로 따로 요청**하고, 두 경로를 순서대로 시도합니다.
+Yahoo Finance가 `.KS` 종목에 대해 약 1개월(≈21거래일)짜리 잘린 히스토리를 돌려주는
+문제입니다. `period="max"` 든 `start="2005-01-01"` 이든 결과가 같아서
+요청 방식으로는 우회되지 않습니다. 실행 시각(오전 6시 등)과도 무관합니다 —
+마지막 봉이 아니라 히스토리 **전체 길이**가 잘리기 때문입니다.
 
-1. `yf.Ticker(t).history(period="max")`
-2. 결과가 짧으면 `yf.download(t, start="2005-01-01")` — 기간을 날짜로 명시
+그래서 가격 소스를 3단으로 두고, **KRX 원본(`pykrx`)을 1순위**로 씁니다.
 
-둘 중 더 긴 히스토리를 채택하므로, 한 종목의 실패가 다른 종목을 오염시키지 않습니다.
-실행 로그에 종목별 수신 일수와 최종일이 찍히니 어디서 끊겼는지 바로 확인할 수 있습니다.
+| 순서 | 소스 | 설명 |
+|---|---|---|
+| 1 | `pykrx` | KRX에서 직접 조회. 국내 상장 종목의 정상 경로 |
+| 2 | `history` | `yf.Ticker().history(period="max")` |
+| 3 | `download` | `yf.download(start="2005-01-01")` |
+
+각 경로의 수신 일수를 로그에 찍고 **가장 긴 것**을 채택합니다.
+충분한 길이(450일)를 확보하면 남은 경로는 건너뜁니다.
 
 ```
-yfinance 0.2.65 — 8종목 수신
-  102110.KS: 1500일, 최종 2026-08-20
-  0019K0.KS: 실패 (history: no data found for this symbol)
+yfinance 0.2.65 | 소스 순서 ['pykrx', 'history', 'download'] | 8종목
+  102110.KS [pykrx] 1500일
+  -> 102110.KS: pykrx 채택, 1500일, 최종 2026-08-20
+  0019K0.KS [pykrx] 빈 응답
+  0019K0.KS [history] 21일 — 부족
+  0019K0.KS [download] 빈 응답
 ```
+
+`PRICE_SOURCE` 변수로 순서를 바꾸거나 특정 소스만 쓸 수 있습니다
+(예: `PRICE_SOURCE=pykrx`).
+
+### pykrx 가 막히는 경우
+
+KRX가 GitHub Actions IP를 일시 차단하면 `pykrx` 가 빈 응답을 줍니다.
+이때는 자동으로 yfinance 경로로 넘어가고, 로그에 어느 소스가 채택됐는지 남습니다.
+두 소스가 모두 실패하는 종목만 **⚠️ 처리 실패**에 표시됩니다.
 
 ### yfinance 버전
 
@@ -218,8 +237,15 @@ yfinance 0.2.65 — 8종목 수신
 
 `0019K0.KS` 처럼 비표준 코드는 Yahoo에 없을 수 있습니다.
 `no data found for this symbol` 이 뜨면 재시도해도 소용없으므로 즉시 실패 처리합니다.
-Yahoo 검색으로 정확한 심볼을 확인하거나, KRX 데이터를 직접 받는
-`pykrx` 로 해당 종목만 대체하는 방법이 있습니다.
+pykrx 는 `.KS` 를 뗀 6자리 코드로 조회하므로, KRX에 실재하는 코드라면
+Yahoo에 없어도 정상 수신됩니다.
+
+### 가격 기준 차이
+
+pykrx 는 KRX 원본 종가(수정 전), yfinance 는 `auto_adjust=True` 수정종가입니다.
+국내 ETF 분배금은 규모가 작아 이동평균 신호에 미치는 영향이 제한적이지만,
+소스가 바뀌면 경계선 부근 신호가 하루 이틀 다를 수 있습니다.
+안정적으로 한 소스만 쓰려면 `PRICE_SOURCE` 를 고정하세요.
 
 ---
 
