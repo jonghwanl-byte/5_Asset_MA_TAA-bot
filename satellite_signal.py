@@ -52,11 +52,9 @@ TICKERS = {
     "453810.KS": "인도 주식",
     "385560.KS": "채권 30년",
     "148070.KS": "채권 10년",
-    "426030.KS": "나스닥 주식",
-    "0019K0.KS": "나스닥 채권",
 }
 
-BASE_WEIGHT = 0.20                                   # 자산별 상한(=기본 비중)
+BASE_WEIGHT = 0.10                                   # 자산별 상한(=기본 비중)
 BASE_WEIGHTS = {t: BASE_WEIGHT for t in TICKERS}
 
 MA_PERIODS = [20, 120, 200]
